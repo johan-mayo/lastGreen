@@ -292,8 +292,12 @@ function DetailPanel({
     const idx = attemptIdx;
     try {
       // Step 1: Filter network requests for relevance (uses Haiku)
-      let relevantRequests = failingRequests;
-      if (failingRequests.length > 0) {
+      // Only consider 4xx, 5xx, and connection errors — 3xx redirects are noise
+      const diagnosticRequests = failingRequests.filter(
+        (r) => r.status >= 400 || r.status <= 0
+      );
+      let relevantRequests = diagnosticRequests;
+      if (diagnosticRequests.length > 0) {
         setAiStatus("Filtering relevant network requests...");
         const filterRes = await fetch("/api/ai-triage/filter-requests", {
           method: "POST",
@@ -302,7 +306,7 @@ function DetailPanel({
             apiKey,
             testName: testCase.fullTitle,
             errorHeadline: attemptSummary.errorHeadline,
-            requests: failingRequests.map((r) => ({
+            requests: diagnosticRequests.map((r) => ({
               url: r.url,
               method: r.method,
               status: r.status,
@@ -315,10 +319,10 @@ function DetailPanel({
         const filterData = await filterRes.json();
         if (filterRes.ok && filterData.relevantIndices) {
           relevantRequests = filterData.relevantIndices.map(
-            (i: number) => failingRequests[i]
+            (i: number) => diagnosticRequests[i]
           );
         }
-        // If filter call fails, fall back to all requests
+        // If filter call fails, fall back to all diagnostic requests
       }
 
       // Step 2: Main diagnosis (uses Opus) with only relevant requests
