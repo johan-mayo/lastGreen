@@ -232,7 +232,7 @@ function DetailPanel({
     typeof window !== "undefined" ? localStorage.getItem("lg-api-key") ?? "" : ""
   );
   const [showKeyInput, setShowKeyInput] = useState(false);
-  const [aiSuggestion, setAiSuggestion] = useState<string | null>(null);
+  const [aiSuggestions, setAiSuggestions] = useState<Record<number, string>>({});
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
 
@@ -272,8 +272,8 @@ function DetailPanel({
     localStorage.setItem("lg-api-key", apiKey);
     setAiLoading(true);
     setAiError(null);
-    setAiSuggestion(null);
 
+    const idx = attemptIdx;
     try {
       const res = await fetch("/api/ai-triage", {
         method: "POST",
@@ -307,13 +307,13 @@ function DetailPanel({
 
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Request failed");
-      setAiSuggestion(data.suggestion);
+      setAiSuggestions((prev) => ({ ...prev, [idx]: data.suggestion }));
     } catch (e) {
       setAiError(e instanceof Error ? e.message : "AI triage failed");
     } finally {
       setAiLoading(false);
     }
-  }, [apiKey, testCase, triage, attemptSummary, attemptDivergence, currentAttempt]);
+  }, [apiKey, attemptIdx, testCase, triage, attemptSummary, attemptDivergence, currentAttempt]);
 
   return (
     <div className="flex flex-col gap-6">
@@ -406,7 +406,7 @@ function DetailPanel({
               disabled={aiLoading}
               className="rounded-md bg-violet-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {aiLoading ? "Analyzing..." : aiSuggestion ? "Re-analyze" : "Diagnose with AI"}
+              {aiLoading ? "Analyzing..." : aiSuggestions[attemptIdx] ? "Re-analyze" : "Diagnose with AI"}
             </button>
             {apiKey && (
               <button
@@ -424,9 +424,9 @@ function DetailPanel({
             {aiError}
           </div>
         )}
-        {aiSuggestion && (
+        {aiSuggestions[attemptIdx] && (
           <div className="mt-4 rounded-md bg-violet-950/20 border border-violet-800/30 px-4 py-3 text-sm leading-relaxed text-zinc-300">
-            {aiSuggestion}
+            {aiSuggestions[attemptIdx]}
           </div>
         )}
       </section>

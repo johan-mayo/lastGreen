@@ -73,7 +73,7 @@ export async function POST(req: NextRequest) {
       messages: [
         {
           role: "user",
-          content: `You are a Playwright test failure expert. A CI test failed and here is the structured analysis:\n\n${parts.join("\n")}\n\nGive a brief, actionable diagnosis: what likely caused this failure and what the engineer should do to fix it. Be specific to the error and step shown. 3-5 sentences max.`,
+          content: `You are a Playwright test failure expert. A single attempt of a CI test failed. The data below is for this one attempt only — diagnose this specific failure compared to the passing run (if provided). Do not mix in information from other retry attempts.\n\n${parts.join("\n")}\n\nGive a brief, actionable diagnosis: what likely caused this specific attempt's failure and what the engineer should do to fix it. Be specific to the error and step shown. 3-5 sentences max.`,
         },
       ],
     });
