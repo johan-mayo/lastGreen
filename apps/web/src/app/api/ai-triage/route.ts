@@ -1,0 +1,89 @@
+import { NextRequest, NextResponse } from "next/server";
+import Anthropic from "@anthropic-ai/sdk";
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const { apiKey, context } = body as {
+      apiKey: string;
+      context: {
+        testName: string;
+        filePath: string;
+        category: string;
+        errorHeadline: string | null;
+        errorStack: string | null;
+        divergence: {
+          stepIndex: number;
+          failingStepTitle: string | null;
+          passingStepTitle: string | null;
+          type: string;
+          description: string;
+        } | null;
+        evidence: { type: string; description: string }[];
+        suggestedNextStep: string;
+        attemptStatus: string;
+      };
+    };
+
+    if (!apiKey) {
+      return NextResponse.json(
+        { error: "API key is required" },
+        { status: 400 }
+      );
+    }
+
+    const client = new Anthropic({ apiKey });
+
+    // Build a concise prompt from the failure context
+    const parts: string[] = [
+      `Test: ${context.testName}`,
+      `File: ${context.filePath}`,
+      `Category: ${context.category}`,
+      `Status: ${context.attemptStatus}`,
+    ];
+
+    if (context.errorHeadline) {
+      parts.push(`Error: ${context.errorHeadline}`);
+    }
+    if (context.errorStack) {
+      // Truncate stack to keep prompt small
+      parts.push(
+        `Stack:\n${context.errorStack.slice(0, 1500)}`
+      );
+    }
+    if (context.divergence) {
+      const d = context.divergence;
+      parts.push(
+        `First divergence (step ${d.stepIndex}): ${d.description}`,
+        `  Failing step: ${d.failingStepTitle ?? "—"}`,
+        `  Passing step: ${d.passingStepTitle ?? "—"}`,
+        `  Type: ${d.type}`
+      );
+    }
+    if (context.evidence.length > 0) {
+      parts.push(
+        `Evidence:\n${context.evidence.map((e) => `  [${e.type}] ${e.description}`).join("\n")}`
+      );
+    }
+    parts.push(`Current suggestion: ${context.suggestedNextStep}`);
+
+    const message = await client.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 400,
+      messages: [
+        {
+          role: "user",
+          content: `You are a Playwright test failure expert. A CI test failed and here is the structured analysis:\n\n${parts.join("\n")}\n\nGive a brief, actionable diagnosis: what likely caused this failure and what the engineer should do to fix it. Be specific to the error and step shown. 3-5 sentences max.`,
+        },
+      ],
+    });
+
+    const text =
+      message.content[0].type === "text" ? message.content[0].text : "";
+
+    return NextResponse.json({ suggestion: text });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "AI triage failed";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}

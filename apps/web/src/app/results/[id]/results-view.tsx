@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import type { AnalysisResult } from "../../api/upload/route";
 import type {
   TriageSummary,
@@ -9,6 +9,7 @@ import type {
   NormalizedStep,
   Divergence,
   EvidenceItem,
+  Artifact,
 } from "@last-green/core";
 import type { CompareResult } from "@last-green/core";
 
@@ -174,6 +175,7 @@ export function ResultsView({ id }: { id: string }) {
             triage={selected}
             compare={selectedCompare}
             hasPassingRun={!!result.passingRun}
+            sessionId={id}
           />
         )}
       </div>
@@ -213,15 +215,26 @@ function DetailPanel({
   triage,
   compare,
   hasPassingRun,
+  sessionId,
 }: {
   triage: TriageSummary;
   compare: CompareResult;
   hasPassingRun: boolean;
+  sessionId: string;
 }) {
   const testCase = triage.testCase;
   const attempts = testCase.results;
   const [attemptIdx, setAttemptIdx] = useState(attempts.length - 1);
   const currentAttempt = attempts[attemptIdx];
+
+  // AI triage state
+  const [apiKey, setApiKey] = useState(() =>
+    typeof window !== "undefined" ? localStorage.getItem("lg-api-key") ?? "" : ""
+  );
+  const [showKeyInput, setShowKeyInput] = useState(false);
+  const [aiSuggestion, setAiSuggestion] = useState<string | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
 
   // Compute per-attempt analysis
   const attemptSummary = useMemo(
@@ -250,6 +263,57 @@ function DetailPanel({
       significance: "high" as const,
     };
   }, [attemptSummary, compare]);
+
+  const requestAiTriage = useCallback(async () => {
+    if (!apiKey.trim()) {
+      setShowKeyInput(true);
+      return;
+    }
+    localStorage.setItem("lg-api-key", apiKey);
+    setAiLoading(true);
+    setAiError(null);
+    setAiSuggestion(null);
+
+    try {
+      const res = await fetch("/api/ai-triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiKey,
+          context: {
+            testName: testCase.fullTitle,
+            filePath: testCase.filePath,
+            category: triage.category,
+            errorHeadline: attemptSummary.errorHeadline,
+            errorStack: currentAttempt?.error?.stack ?? currentAttempt?.error?.message ?? null,
+            divergence: attemptDivergence
+              ? {
+                  stepIndex: attemptDivergence.stepIndex,
+                  failingStepTitle: attemptDivergence.failingStep?.title ?? null,
+                  passingStepTitle: attemptDivergence.passingStep?.title ?? null,
+                  type: attemptDivergence.type,
+                  description: attemptDivergence.description,
+                }
+              : null,
+            evidence: triage.evidence.map((e) => ({
+              type: e.type,
+              description: e.description,
+            })),
+            suggestedNextStep: attemptSummary.suggestedNextStep,
+            attemptStatus: currentAttempt?.status ?? "unknown",
+          },
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Request failed");
+      setAiSuggestion(data.suggestion);
+    } catch (e) {
+      setAiError(e instanceof Error ? e.message : "AI triage failed");
+    } finally {
+      setAiLoading(false);
+    }
+  }, [apiKey, testCase, triage, attemptSummary, attemptDivergence, currentAttempt]);
 
   return (
     <div className="flex flex-col gap-6">
@@ -303,7 +367,70 @@ function DetailPanel({
         </section>
       )}
 
-      <EvidenceCard evidence={triage.evidence} />
+      <EvidenceCard
+        evidence={triage.evidence}
+        artifacts={currentAttempt?.artifacts ?? []}
+        sessionId={sessionId}
+      />
+
+      {/* AI Triage */}
+      <section className="rounded-lg bg-zinc-900 p-6">
+        <div className="flex items-center justify-between">
+          <h4 className="text-sm font-semibold uppercase tracking-wider text-zinc-500">
+            AI Diagnosis
+          </h4>
+          <div className="flex items-center gap-2">
+            {showKeyInput && (
+              <input
+                type="password"
+                placeholder="Anthropic API key"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && apiKey.trim()) {
+                    setShowKeyInput(false);
+                    requestAiTriage();
+                  }
+                }}
+                className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-200 placeholder-zinc-500 focus:border-violet-500 focus:outline-none w-64"
+              />
+            )}
+            <button
+              onClick={() => {
+                if (!apiKey.trim()) {
+                  setShowKeyInput(true);
+                } else {
+                  requestAiTriage();
+                }
+              }}
+              disabled={aiLoading}
+              className="rounded-md bg-violet-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {aiLoading ? "Analyzing..." : aiSuggestion ? "Re-analyze" : "Diagnose with AI"}
+            </button>
+            {apiKey && (
+              <button
+                onClick={() => setShowKeyInput(!showKeyInput)}
+                className="text-xs text-zinc-600 hover:text-zinc-400"
+                title="Toggle API key input"
+              >
+                key
+              </button>
+            )}
+          </div>
+        </div>
+        {aiError && (
+          <div className="mt-3 rounded-md bg-red-950/30 px-4 py-2 text-sm text-red-400">
+            {aiError}
+          </div>
+        )}
+        {aiSuggestion && (
+          <div className="mt-4 rounded-md bg-violet-950/20 border border-violet-800/30 px-4 py-3 text-sm leading-relaxed text-zinc-300">
+            {aiSuggestion}
+          </div>
+        )}
+      </section>
+
       <AttemptSteps attempt={currentAttempt} attemptIdx={attemptIdx} compare={compare} hasPassingRun={hasPassingRun} />
     </div>
   );
@@ -402,24 +529,85 @@ function DivergenceCard({
   );
 }
 
-function EvidenceCard({ evidence }: { evidence: EvidenceItem[] }) {
+function EvidenceCard({
+  evidence,
+  artifacts,
+  sessionId,
+}: {
+  evidence: EvidenceItem[];
+  artifacts: Artifact[];
+  sessionId: string;
+}) {
   // Filter out error_message items — shown separately in per-attempt error block
   const items = evidence.filter((e) => e.type !== "error_message");
-  if (items.length === 0) return null;
+  const screenshots = artifacts.filter(
+    (a) => a.type === "screenshot" && a.contentType.startsWith("image/")
+  );
+  const videos = artifacts.filter(
+    (a) => a.type === "video" && a.contentType.startsWith("video/")
+  );
+
+  if (items.length === 0 && screenshots.length === 0 && videos.length === 0) return null;
 
   return (
     <section className="rounded-lg bg-zinc-900 p-6">
       <h4 className="text-sm font-semibold uppercase tracking-wider text-zinc-500">
         Evidence
       </h4>
-      <ul className="mt-3 flex flex-col gap-2">
-        {items.map((e, i) => (
-          <li key={i} className="flex items-start gap-3 text-sm">
-            <EvidenceIcon type={e.type} />
-            <span className="text-zinc-300">{e.description}</span>
-          </li>
-        ))}
-      </ul>
+      {items.length > 0 && (
+        <ul className="mt-3 flex flex-col gap-2">
+          {items.map((e, i) => (
+            <li key={i} className="flex items-start gap-3 text-sm">
+              <EvidenceIcon type={e.type} />
+              <span className="text-zinc-300">{e.description}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {screenshots.length > 0 && (
+        <div className="mt-4">
+          <h5 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-3">
+            Screenshots
+          </h5>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            {screenshots.map((s, i) => (
+              <div key={i} className="overflow-hidden rounded-md border border-zinc-800">
+                <img
+                  src={`/api/artifacts/${sessionId}?path=${encodeURIComponent(s.path)}`}
+                  alt={s.name}
+                  className="w-full cursor-pointer hover:opacity-90 transition-opacity"
+                  loading="lazy"
+                  onClick={() => window.open(`/api/artifacts/${sessionId}?path=${encodeURIComponent(s.path)}`, "_blank")}
+                />
+                <div className="bg-zinc-800 px-3 py-1.5 text-xs text-zinc-400 truncate">
+                  {s.name}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {videos.length > 0 && (
+        <div className="mt-4">
+          <h5 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-3">
+            Videos
+          </h5>
+          <div className="flex flex-col gap-4">
+            {videos.map((v, i) => (
+              <div key={i} className="overflow-hidden rounded-md border border-zinc-800">
+                <video
+                  src={`/api/artifacts/${sessionId}?path=${encodeURIComponent(v.path)}`}
+                  controls
+                  className="w-full"
+                />
+                <div className="bg-zinc-800 px-3 py-1.5 text-xs text-zinc-400 truncate">
+                  {v.name}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </section>
   );
 }

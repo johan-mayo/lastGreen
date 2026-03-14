@@ -76,17 +76,31 @@ export function triageTest(compareResult: CompareResult): TriageSummary {
 
   const errorMsg = errorComparison?.failingError?.toLowerCase() ?? "";
 
-  // Timing/flaky signals
+  // Timeout signals — check for pointer interception pattern (common UI flake)
+  const isPointerInterception =
+    errorMsg.includes("intercepts pointer events") ||
+    errorMsg.includes("subtree intercepts pointer");
+
   if (
     failingTest.status === "timedOut" ||
     errorMsg.includes("timeout") ||
     errorMsg.includes("timed out")
   ) {
-    if (firstDivergence?.type === "timing_spike") {
+    if (isPointerInterception) {
+      category = "app_regression";
+      confidence = "medium";
+      suggestedNextStep = firstDivergence
+        ? `Step "${firstDivergence.failingStep?.title}" timed out because an overlay element intercepts pointer events. Check for unexpected modals, tooltips, or loading overlays blocking the click target.`
+        : "A click action timed out because an overlay element intercepts pointer events. Check for unexpected modals, tooltips, or loading overlays.";
+    } else if (firstDivergence?.type === "timing_spike") {
       category = "flaky_timing";
       confidence = "medium";
       suggestedNextStep =
         "Check if the test timeout is too aggressive or if the app is under load. Look at the timing delta.";
+    } else if (firstDivergence?.type === "error_introduced") {
+      category = "flaky_timing";
+      confidence = "medium";
+      suggestedNextStep = `Step "${firstDivergence.failingStep?.title}" timed out. Review the error and trace to see what the app was doing when it hung.`;
     } else {
       category = "flaky_timing";
       confidence = "low";
@@ -191,8 +205,10 @@ function buildSummaryText(
   let text = `Test "${test.fullTitle}" failed.`;
   text += ` Triage: ${categoryLabel[category]} (${confidence} confidence).`;
 
-  if (divergence) {
+  if (divergence && hasPassingRun) {
     text += ` First divergence: ${divergence.description}.`;
+  } else if (divergence) {
+    text += ` Failing step: ${divergence.description}.`;
   } else if (hasPassingRun) {
     text += " No clear step-level divergence found between passing and failing runs.";
   } else {
