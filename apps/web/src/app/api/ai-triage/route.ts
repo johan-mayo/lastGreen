@@ -143,11 +143,15 @@ export async function POST(req: NextRequest) {
 }`,
       });
 
-      // Replay conversation history
-      for (const msg of conversationHistory) {
+      // Replay conversation history, appending JSON instruction to the last user message
+      for (let i = 0; i < conversationHistory.length; i++) {
+        const msg = conversationHistory[i];
+        const isLastUser = msg.role === "user" && i === conversationHistory.length - 1;
         messages.push({
           role: msg.role,
-          content: msg.content,
+          content: isLastUser
+            ? `${msg.content}\n\nIncorporate my feedback and return an updated diagnosis as ONLY strict JSON (no markdown fences) with the same shape: { "category", "confidence", "primaryEvidence", "counterEvidence", "diagnosis", "suggestedNextStep" }`
+            : msg.content,
         });
       }
     } else {
@@ -176,12 +180,7 @@ export async function POST(req: NextRequest) {
     const text =
       response.content[0].type === "text" ? response.content[0].text : "";
 
-    if (isFollowUp) {
-      // Follow-up: return plain text response
-      return NextResponse.json({ reply: text });
-    }
-
-    // Initial: parse structured response
+    // Parse structured response (both initial and follow-up)
     const result = extractTriageResult(text);
 
     return NextResponse.json({ result, rawResponse: text });

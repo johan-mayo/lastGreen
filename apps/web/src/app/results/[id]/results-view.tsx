@@ -17,6 +17,26 @@ import type {
 } from "@last-green/core";
 import type { CompareResult } from "@last-green/core";
 
+/** Try to parse a string as AiTriageResult JSON (handles markdown fences) */
+function tryParseTriageResult(text: string): AiTriageResult | null {
+  try {
+    const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
+    if (fenceMatch) {
+      const parsed = JSON.parse(fenceMatch[1]);
+      if (parsed.category && parsed.diagnosis) return parsed;
+    }
+    const firstBrace = text.indexOf("{");
+    const lastBrace = text.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      const parsed = JSON.parse(text.slice(firstBrace, lastBrace + 1));
+      if (parsed.category && parsed.diagnosis) return parsed;
+    }
+    const parsed = JSON.parse(text);
+    if (parsed.category && parsed.diagnosis) return parsed;
+  } catch { /* not valid JSON */ }
+  return null;
+}
+
 /** Normalize step titles by replacing UUIDs/hashes with placeholders for comparison */
 function normalizeStepTitle(title: string): string {
   return title
@@ -579,8 +599,12 @@ function DetailPanel({
       if (!res.ok) throw new Error(data.error ?? "Request failed");
       setConversations((prev) => ({
         ...prev,
-        [idx]: [...updatedHistory, { role: "assistant" as const, content: data.reply }],
+        [idx]: [...updatedHistory, { role: "assistant" as const, content: data.rawResponse }],
       }));
+      // Update the structured result so the card reflects the latest diagnosis
+      if (data.result) {
+        setAiResults((prev) => ({ ...prev, [idx]: data.result }));
+      }
     } catch (e) {
       setAiError(e instanceof Error ? e.message : "Follow-up failed");
     } finally {
@@ -713,24 +737,30 @@ function DetailPanel({
           <AiTriageResultCard result={aiResults[attemptIdx]} />
         )}
 
-        {/* Conversation thread */}
+        {/* Conversation thread — user messages + updated AI cards */}
         {conversations[attemptIdx] && conversations[attemptIdx].length > 1 && (
           <div className="mt-4 flex flex-col gap-3">
-            {conversations[attemptIdx].slice(1).map((msg, i) => (
-              <div
-                key={i}
-                className={`rounded-md px-4 py-3 text-sm ${
-                  msg.role === "user"
-                    ? "bg-zinc-800 text-zinc-200 ml-8"
-                    : "bg-violet-950/20 border border-violet-800/30 text-zinc-300 mr-8"
-                }`}
-              >
-                <span className="text-xs font-medium uppercase tracking-wider text-zinc-500 block mb-1">
-                  {msg.role === "user" ? "You" : "AI"}
-                </span>
-                <p className="leading-relaxed whitespace-pre-wrap">{msg.content}</p>
-              </div>
-            ))}
+            {conversations[attemptIdx].slice(1).map((msg, i) => {
+              if (msg.role === "user") {
+                return (
+                  <div key={i} className="rounded-md bg-zinc-800 px-4 py-3 text-sm text-zinc-200 ml-8">
+                    <span className="text-xs font-medium uppercase tracking-wider text-zinc-500 block mb-1">You</span>
+                    <p className="leading-relaxed whitespace-pre-wrap">{msg.content}</p>
+                  </div>
+                );
+              }
+              // AI message — try to parse as structured result
+              const parsed = tryParseTriageResult(msg.content);
+              if (parsed) {
+                return <AiTriageResultCard key={i} result={parsed} />;
+              }
+              return (
+                <div key={i} className="rounded-md bg-violet-950/20 border border-violet-800/30 px-4 py-3 text-sm text-zinc-300 mr-8">
+                  <span className="text-xs font-medium uppercase tracking-wider text-zinc-500 block mb-1">AI</span>
+                  <p className="leading-relaxed whitespace-pre-wrap">{msg.content}</p>
+                </div>
+              );
+            })}
             {aiLoading && (
               <div className="bg-violet-950/20 border border-violet-800/30 rounded-md px-4 py-3 text-sm text-zinc-500 mr-8">
                 Thinking...
