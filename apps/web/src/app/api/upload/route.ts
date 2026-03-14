@@ -24,6 +24,8 @@ export interface AnalysisResult {
   compareResults: CompareResult[];
   /** Per-test, per-attempt network requests parsed from trace files. Keyed by `testId:attempt`. */
   networkRequests?: Record<string, NetworkRequest[]>;
+  /** Passing run network requests. Keyed by `testId:attempt`. */
+  passingNetworkRequests?: Record<string, NetworkRequest[]>;
 }
 
 export async function POST(req: NextRequest) {
@@ -71,6 +73,9 @@ export async function POST(req: NextRequest) {
 
     // Extract network requests from trace files
     const networkRequests = await extractNetworkRequests(failingRun, sessionDir);
+    const passingNetworkRequests = passingRun
+      ? await extractNetworkRequests(passingRun, sessionDir)
+      : undefined;
 
     // Persist result
     const result: AnalysisResult = {
@@ -81,6 +86,7 @@ export async function POST(req: NextRequest) {
       triageSummaries,
       compareResults,
       networkRequests,
+      passingNetworkRequests,
     };
 
     await writeFile(

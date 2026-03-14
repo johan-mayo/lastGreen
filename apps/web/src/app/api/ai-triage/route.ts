@@ -1,132 +1,138 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
+import type { ComparisonSummary, AiTriageResult } from "@last-green/core";
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { apiKey, context } = body as {
+    const { apiKey, comparison } = body as {
       apiKey: string;
-      context: {
-        testName: string;
-        filePath: string;
-        category: string;
-        errorHeadline: string | null;
-        errorStack: string | null;
-        divergence: {
-          stepIndex: number;
-          failingStepTitle: string | null;
-          passingStepTitle: string | null;
-          type: string;
-          description: string;
-        } | null;
-        evidence: { type: string; description: string }[];
-        suggestedNextStep: string;
-        attemptStatus: string;
-        passingRun: {
-          status: string;
-          duration: number;
-          stepsAroundDivergence: { index: number; title: string; duration: number; error: string | null }[];
-          totalSteps: number;
-        } | null;
-        relevantRequests: {
-          url: string;
-          method: string;
-          status: number;
-          statusText: string;
-          duration: number;
-          requestBody?: string;
-          responseBody?: string;
-          responseContentType?: string;
-        }[];
-      };
+      comparison: ComparisonSummary;
     };
 
     if (!apiKey) {
       return NextResponse.json(
         { error: "API key is required" },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
     const client = new Anthropic({ apiKey });
 
-    // Build a concise prompt from the failure context
+    // Build structured context from the comparison summary
     const parts: string[] = [
-      `Test: ${context.testName}`,
-      `File: ${context.filePath}`,
-      `Category: ${context.category}`,
-      `Status: ${context.attemptStatus}`,
+      `Test: ${comparison.testName}`,
+      `File: ${comparison.filePath}`,
+      `Status: ${comparison.attemptStatus}`,
     ];
 
-    if (context.errorHeadline) {
-      parts.push(`Error: ${context.errorHeadline}`);
+    if (comparison.errorHeadline) {
+      parts.push(`Error: ${comparison.errorHeadline}`);
     }
-    if (context.errorStack) {
-      // Truncate stack to keep prompt small
+    if (comparison.errorStack) {
+      parts.push(`Stack:\n${comparison.errorStack.slice(0, 1500)}`);
+    }
+
+    if (comparison.firstDivergence) {
+      const d = comparison.firstDivergence;
       parts.push(
-        `Stack:\n${context.errorStack.slice(0, 1500)}`
+        `\nFirst divergence (step ${d.stepIndex}, ${d.kind}): ${d.description}`,
       );
     }
-    if (context.divergence) {
-      const d = context.divergence;
+
+    if (comparison.stepDiffs.length > 0) {
+      parts.push(`\nStep diffs around divergence:`);
+      for (const sd of comparison.stepDiffs) {
+        const pass = sd.passTitle ?? "—";
+        const fail = sd.failTitle ?? "—";
+        parts.push(`  [${sd.stepIndex}] ${sd.kind}: fail="${fail}" pass="${pass}"${sd.note ? ` (${sd.note})` : ""}`);
+      }
+    }
+
+    if (comparison.requestDiffs.length > 0) {
+      parts.push(`\nNetwork request diffs (deterministically filtered for relevance):`);
+      for (const rd of comparison.requestDiffs) {
+        const passLabel = rd.passStatus !== null ? String(rd.passStatus) : "N/A";
+        const failLabel = rd.failStatus <= 0 ? "ERR" : String(rd.failStatus);
+        let line = `  ${rd.method} ${rd.url} → fail:${failLabel} pass:${passLabel}`;
+        if (rd.alsoFailedInPass) line += " [ALSO FAILED IN PASS]";
+        if (rd.changedBetweenRuns) line += " [STATUS CHANGED]";
+        line += ` — ${rd.reason}`;
+        parts.push(line);
+        if (rd.responseBody) {
+          parts.push(`    Response: ${rd.responseBody.slice(0, 300)}`);
+        }
+      }
+    }
+
+    if (comparison.consoleDiffs.length > 0) {
       parts.push(
-        `First divergence (step ${d.stepIndex}): ${d.description}`,
-        `  Failing step: ${d.failingStepTitle ?? "—"}`,
-        `  Passing step: ${d.passingStepTitle ?? "—"}`,
-        `  Type: ${d.type}`
+        `\nConsole errors only in failing run:`,
+        ...comparison.consoleDiffs.map((c: string) => `  ${c}`),
       );
     }
-    if (context.passingRun) {
-      const pr = context.passingRun;
+
+    if (comparison.likelyRedHerrings.length > 0) {
       parts.push(
-        `\nPassing run: status=${pr.status}, duration=${pr.duration}ms, ${pr.totalSteps} total steps`,
-        `Passing steps around divergence point:`,
-        ...pr.stepsAroundDivergence.map(
-          (s) => `  [${s.index}] "${s.title}" ${s.duration}ms${s.error ? ` ERROR: ${s.error}` : ""}`
-        )
-      );
-    } else {
-      parts.push(`\nNo passing run provided (single-report mode).`);
-    }
-    if (context.relevantRequests.length > 0) {
-      parts.push(
-        `\nRelevant failing network requests (pre-filtered for relevance, ${context.relevantRequests.length} total):`,
-        ...context.relevantRequests.map((r) => {
-          const lines = [
-            `  ${r.method} ${r.url} → ${r.status <= 0 ? "FAILED" : r.status} ${r.statusText} (${r.duration}ms)`,
-          ];
-          if (r.requestBody) {
-            lines.push(`    Request body: ${r.requestBody.slice(0, 500)}`);
-          }
-          if (r.responseBody) {
-            lines.push(`    Response body: ${r.responseBody.slice(0, 500)}`);
-          }
-          return lines.join("\n");
-        })
+        `\nLikely red herrings (do not use as primary evidence):`,
+        ...comparison.likelyRedHerrings.map((r: string) => `  - ${r}`),
       );
     }
-    if (context.evidence.length > 0) {
-      parts.push(
-        `Evidence:\n${context.evidence.map((e) => `  [${e.type}] ${e.description}`).join("\n")}`
-      );
-    }
-    parts.push(`Current suggestion: ${context.suggestedNextStep}`);
 
     const message = await client.messages.create({
       model: "claude-opus-4-6",
-      max_tokens: 400,
+      max_tokens: 600,
       messages: [
         {
           role: "user",
-          content: `You are a Playwright test failure expert. These are e2e tests that cover UI, API, and SDK surfaces. A failure may be a genuine bug, but it can also be caused by an intentional change to a service (updated API response, redesigned UI element, new SDK behavior) that the test hasn't been updated to reflect yet. Keep both possibilities in mind when diagnosing.\n\nA single attempt of a CI test failed. The data below is for this one attempt only — diagnose this specific failure compared to the passing run (if provided). Do not mix in information from other retry attempts.\n\n${parts.join("\n")}\n\nGive a brief, actionable diagnosis: what likely caused this specific attempt's failure and what the engineer should do to fix it. Be specific to the error and step shown. 3-5 sentences max.`,
+          content: `You are doing evidence-based triage for a failing Playwright e2e test. These tests cover UI, API, and SDK surfaces. A failure may be a genuine bug, or it may be caused by an intentional change to a service that the test hasn't been updated to reflect yet.
+
+Rules:
+- The first meaningful divergence is the primary signal.
+- A network request is only considered causal if it differs from the passing run and occurs at or before the divergence.
+- Requests marked [ALSO FAILED IN PASS] are NOT the cause — they existed in the passing run too.
+- Requests listed as likely red herrings should not be used as primary evidence.
+- If step sequence, navigation, locator behavior, or assertion output changed without a strong network difference, prefer "ui_change_or_outdated_test" or "unknown".
+- Do not infer hidden backend failures without direct evidence.
+- If evidence is weak or mixed, return "unknown" with low confidence.
+
+${parts.join("\n")}
+
+Return ONLY strict JSON (no markdown fences) with this shape:
+{
+  "category": "app_regression" | "ui_change_or_outdated_test" | "timing_or_flake" | "environment_issue" | "unknown",
+  "confidence": "low" | "medium" | "high",
+  "primaryEvidence": ["evidence item 1", ...],
+  "counterEvidence": ["counter-evidence item 1", ...],
+  "diagnosis": "2-4 sentence diagnosis",
+  "suggestedNextStep": "what the engineer should do"
+}`,
         },
       ],
     });
 
     const text =
-      message.content[0].type === "text" ? message.content[0].text : "";
+      message.content[0].type === "text" ? message.content[0].text : "{}";
 
-    return NextResponse.json({ suggestion: text });
+    // Parse the structured response
+    let result: AiTriageResult;
+    try {
+      // Strip markdown fences if the model adds them
+      const cleaned = text.replace(/^```(?:json)?\s*/m, "").replace(/\s*```$/m, "");
+      result = JSON.parse(cleaned);
+    } catch {
+      // Fallback: treat entire response as freeform diagnosis
+      result = {
+        category: "unknown",
+        confidence: "low",
+        diagnosis: text,
+        primaryEvidence: [],
+        counterEvidence: [],
+        suggestedNextStep: "Review the test failure details manually.",
+      };
+    }
+
+    return NextResponse.json({ result });
   } catch (e) {
     const message = e instanceof Error ? e.message : "AI triage failed";
     return NextResponse.json({ error: message }, { status: 500 });

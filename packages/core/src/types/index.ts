@@ -246,3 +246,56 @@ export interface TriageSummary {
   suggestedNextStep: string;
   summary: string;
 }
+
+// ---- AI Triage models ----
+
+export interface RequestDiff {
+  method: string;
+  url: string;
+  failStatus: number;
+  passStatus: number | null;
+  changedBetweenRuns: boolean;
+  alsoFailedInPass: boolean;
+  reason: string;
+  responseBody?: string;
+  requestBody?: string;
+}
+
+export interface ComparisonSummary {
+  testName: string;
+  filePath: string;
+  attemptStatus: string;
+  errorHeadline: string | null;
+  errorStack: string | null;
+  firstDivergence: {
+    stepIndex: number;
+    kind: string;
+    description: string;
+  } | null;
+  stepDiffs: {
+    stepIndex: number;
+    passTitle: string | null;
+    failTitle: string | null;
+    kind: "same" | "missing_in_fail" | "extra_in_fail" | "renamed" | "error_mismatch" | "timing_shift";
+    note?: string;
+  }[];
+  requestDiffs: RequestDiff[];
+  consoleDiffs: string[];
+  likelyRedHerrings: string[];
+}
+
+export type AiTriageCategory =
+  | "app_regression"
+  | "ui_change_or_outdated_test"
+  | "timing_or_flake"
+  | "environment_issue"
+  | "unknown";
+
+export interface AiTriageResult {
+  category: AiTriageCategory;
+  confidence: "low" | "medium" | "high";
+  diagnosis: string;
+  primaryEvidence: string[];
+  counterEvidence: string[];
+  suggestedNextStep: string;
+}

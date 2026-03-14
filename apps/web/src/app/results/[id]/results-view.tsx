@@ -11,6 +11,9 @@ import type {
   EvidenceItem,
   Artifact,
   NetworkRequest,
+  ComparisonSummary,
+  RequestDiff,
+  AiTriageResult,
 } from "@last-green/core";
 import type { CompareResult } from "@last-green/core";
 
@@ -107,6 +110,204 @@ function getAttemptSummary(attempt: NormalizedTestResult | undefined): {
   return { failingStep, errorHeadline, suggestedNextStep };
 }
 
+// ---- Deterministic request filtering ----
+
+const IRRELEVANT_RESOURCE_TYPES = new Set([
+  "image", "font", "media", "stylesheet",
+]);
+
+const IRRELEVANT_URL_PATTERNS = [
+  /favicon/i, /analytics/i, /segment/i, /sentry/i,
+  /telemetry/i, /hotjar/i, /intercom/i, /datadog/i,
+  /google-analytics/i, /googletagmanager/i, /mixpanel/i,
+  /amplitude/i, /fullstory/i, /logrocket/i, /newrelic/i,
+  /\.woff2?$/i, /\.ttf$/i, /\.eot$/i,
+];
+
+function isIrrelevantRequest(r: NetworkRequest): boolean {
+  if (r.resourceType && IRRELEVANT_RESOURCE_TYPES.has(r.resourceType)) return true;
+  return IRRELEVANT_URL_PATTERNS.some((p) => p.test(r.url));
+}
+
+/** Build request diffs by comparing fail vs pass network requests for the same endpoint */
+function buildRequestDiffs(
+  failRequests: NetworkRequest[],
+  passRequests: NetworkRequest[],
+): RequestDiff[] {
+  // Only consider 4xx, 5xx, and connection errors
+  const diagnosticFail = failRequests.filter(
+    (r) => (r.status >= 400 || r.status <= 0) && !isIrrelevantRequest(r)
+  );
+
+  // Index passing requests by method+pathname for lookup
+  const passIndex = new Map<string, NetworkRequest[]>();
+  for (const r of passRequests) {
+    let pathname: string;
+    try { pathname = new URL(r.url).pathname; } catch { pathname = r.url; }
+    const key = `${r.method}::${pathname}`;
+    const list = passIndex.get(key) ?? [];
+    list.push(r);
+    passIndex.set(key, list);
+  }
+
+  const diffs: RequestDiff[] = [];
+  for (const fr of diagnosticFail) {
+    let pathname: string;
+    try { pathname = new URL(fr.url).pathname; } catch { pathname = fr.url; }
+    const key = `${fr.method}::${pathname}`;
+    const passMatches = passIndex.get(key) ?? [];
+
+    // Check if same endpoint also failed in passing run
+    const alsoFailedInPass = passMatches.some(
+      (pr) => pr.status >= 400 || pr.status <= 0
+    );
+    const passStatus = passMatches.length > 0
+      ? passMatches[passMatches.length - 1].status
+      : null;
+    const changedBetweenRuns = passStatus !== null && passStatus !== fr.status;
+
+    let reason: string;
+    if (alsoFailedInPass) {
+      reason = "Also failed in passing run — unlikely to be the cause";
+    } else if (changedBetweenRuns) {
+      reason = `Status changed from ${passStatus} (pass) to ${fr.status <= 0 ? "ERR" : fr.status} (fail)`;
+    } else if (passStatus === null) {
+      reason = "No matching request in passing run";
+    } else {
+      reason = "Request failed";
+    }
+
+    diffs.push({
+      method: fr.method,
+      url: fr.url,
+      failStatus: fr.status,
+      passStatus,
+      changedBetweenRuns,
+      alsoFailedInPass,
+      reason,
+      responseBody: fr.responseBody,
+      requestBody: fr.requestBody,
+    });
+  }
+
+  // Sort: changed-between-runs first, also-failed-in-pass last
+  diffs.sort((a, b) => {
+    if (a.changedBetweenRuns && !b.changedBetweenRuns) return -1;
+    if (!a.changedBetweenRuns && b.changedBetweenRuns) return 1;
+    if (a.alsoFailedInPass && !b.alsoFailedInPass) return 1;
+    if (!a.alsoFailedInPass && b.alsoFailedInPass) return -1;
+    return 0;
+  });
+
+  return diffs;
+}
+
+/** Build the full comparison summary for AI consumption */
+function buildComparisonSummary(
+  testCase: NormalizedTestCase,
+  currentAttempt: NormalizedTestResult | undefined,
+  compare: CompareResult,
+  failRequests: NetworkRequest[],
+  passRequests: NetworkRequest[],
+  attemptSummary: ReturnType<typeof getAttemptSummary>,
+): ComparisonSummary {
+  const passResult = compare.match.passingTest?.results.find(
+    (r) => r.status === "passed"
+  ) ?? compare.match.passingTest?.results[
+    compare.match.passingTest.results.length - 1
+  ];
+
+  // Step diffs around divergence
+  const failSteps = currentAttempt?.steps ?? [];
+  const passSteps = passResult?.steps ?? [];
+  const divIdx = attemptSummary.failingStep?.index ?? 0;
+  const start = Math.max(0, divIdx - 3);
+  const end = Math.min(Math.max(failSteps.length, passSteps.length), divIdx + 4);
+
+  const stepDiffs: ComparisonSummary["stepDiffs"] = [];
+  for (let i = start; i < end; i++) {
+    const fs = failSteps[i];
+    const ps = passSteps[i];
+    let kind: ComparisonSummary["stepDiffs"][number]["kind"] = "same";
+    let note: string | undefined;
+
+    if (fs && !ps) {
+      kind = "extra_in_fail";
+    } else if (!fs && ps) {
+      kind = "missing_in_fail";
+    } else if (fs && ps) {
+      if (!stepTitlesMatch(fs.title, ps.title)) {
+        kind = "renamed";
+        note = `"${ps.title}" → "${fs.title}"`;
+      } else if (fs.error && !ps.error) {
+        kind = "error_mismatch";
+        note = fs.error.message?.replace(/\[\d+m/g, "").split("\n")[0];
+      } else if (ps.duration > 0 && fs.duration > ps.duration * 3) {
+        kind = "timing_shift";
+        note = `${ps.duration}ms → ${fs.duration}ms`;
+      }
+    }
+
+    if (kind !== "same") {
+      stepDiffs.push({
+        stepIndex: i,
+        passTitle: ps?.title ?? null,
+        failTitle: fs?.title ?? null,
+        kind,
+        note,
+      });
+    }
+  }
+
+  // Request diffs
+  const requestDiffs = buildRequestDiffs(failRequests, passRequests);
+
+  // Console diffs — stderr lines only in failing attempt
+  const failStderr = currentAttempt?.stderr ?? [];
+  const passStderr = passResult?.stderr ?? [];
+  const passStderrSet = new Set(passStderr);
+  const consoleDiffs = failStderr.filter(
+    (s) => !passStderrSet.has(s) && (s.toLowerCase().includes("error") || s.toLowerCase().includes("fail"))
+  );
+
+  // Red herrings
+  const likelyRedHerrings: string[] = [];
+  for (const rd of requestDiffs) {
+    if (rd.alsoFailedInPass) {
+      likelyRedHerrings.push(`${rd.method} ${rd.url} (${rd.failStatus <= 0 ? "ERR" : rd.failStatus}) — also failed in passing run`);
+    }
+  }
+
+  // Build divergence info from the compare engine's result for this attempt
+  const firstDivergence = attemptSummary.failingStep
+    ? {
+        stepIndex: attemptSummary.failingStep.index,
+        kind: compare.firstDivergence?.type ?? "error_introduced",
+        description: compare.firstDivergence?.description
+          ?? `Step "${attemptSummary.failingStep.step.title}" failed`,
+      }
+    : compare.firstDivergence
+      ? {
+          stepIndex: compare.firstDivergence.stepIndex,
+          kind: compare.firstDivergence.type,
+          description: compare.firstDivergence.description,
+        }
+      : null;
+
+  return {
+    testName: testCase.fullTitle,
+    filePath: testCase.filePath,
+    attemptStatus: currentAttempt?.status ?? "unknown",
+    errorHeadline: attemptSummary.errorHeadline,
+    errorStack: currentAttempt?.error?.stack ?? currentAttempt?.error?.message ?? null,
+    firstDivergence,
+    stepDiffs,
+    requestDiffs: requestDiffs.filter((r) => !r.alsoFailedInPass).slice(0, 8),
+    consoleDiffs: consoleDiffs.slice(0, 5),
+    likelyRedHerrings: likelyRedHerrings.slice(0, 5),
+  };
+}
+
 export function ResultsView({ id }: { id: string }) {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -179,6 +380,7 @@ export function ResultsView({ id }: { id: string }) {
             hasPassingRun={!!result.passingRun}
             sessionId={id}
             networkRequests={result.networkRequests ?? {}}
+            passingNetworkRequests={result.passingNetworkRequests ?? {}}
           />
           </div>
         )}
@@ -221,12 +423,14 @@ function DetailPanel({
   hasPassingRun,
   sessionId,
   networkRequests: networkRequestsMap,
+  passingNetworkRequests: passingNetworkRequestsMap,
 }: {
   triage: TriageSummary;
   compare: CompareResult;
   hasPassingRun: boolean;
   sessionId: string;
   networkRequests: Record<string, NetworkRequest[]>;
+  passingNetworkRequests: Record<string, NetworkRequest[]>;
 }) {
   const testCase = triage.testCase;
   const attempts = testCase.results;
@@ -238,7 +442,7 @@ function DetailPanel({
     typeof window !== "undefined" ? localStorage.getItem("lg-api-key") ?? "" : ""
   );
   const [showKeyInput, setShowKeyInput] = useState(false);
-  const [aiSuggestions, setAiSuggestions] = useState<Record<number, string>>({});
+  const [aiResults, setAiResults] = useState<Record<number, AiTriageResult>>({});
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
 
@@ -248,6 +452,17 @@ function DetailPanel({
     const all = networkRequestsMap[key] ?? [];
     return all.filter((r) => r.failed);
   }, [testCase.id, currentAttempt, networkRequestsMap]);
+
+  // Passing network requests for comparison
+  const passingRequests = useMemo(() => {
+    const passingTest = compare.match.passingTest;
+    if (!passingTest) return [];
+    const passResult = passingTest.results.find((r) => r.status === "passed")
+      ?? passingTest.results[passingTest.results.length - 1];
+    if (!passResult) return [];
+    const key = `${passingTest.id}:${passResult.attempt}`;
+    return passingNetworkRequestsMap[key] ?? [];
+  }, [compare.match.passingTest, passingNetworkRequestsMap]);
 
   // Compute per-attempt analysis
   const attemptSummary = useMemo(
@@ -277,8 +492,6 @@ function DetailPanel({
     };
   }, [attemptSummary, compare]);
 
-  const [aiStatus, setAiStatus] = useState<string | null>(null);
-
   const requestAiTriage = useCallback(async () => {
     if (!apiKey.trim()) {
       setShowKeyInput(true);
@@ -287,116 +500,35 @@ function DetailPanel({
     localStorage.setItem("lg-api-key", apiKey);
     setAiLoading(true);
     setAiError(null);
-    setAiStatus(null);
 
     const idx = attemptIdx;
     try {
-      // Step 1: Filter network requests for relevance (uses Haiku)
-      // Only consider 4xx, 5xx, and connection errors — 3xx redirects are noise
-      const diagnosticRequests = failingRequests.filter(
-        (r) => r.status >= 400 || r.status <= 0
+      // Build deterministic comparison summary — all filtering happens here, not in the LLM
+      const allFailRequests = networkRequestsMap[`${testCase.id}:${currentAttempt?.attempt ?? 0}`] ?? [];
+      const comparison = buildComparisonSummary(
+        testCase,
+        currentAttempt,
+        compare,
+        allFailRequests,
+        passingRequests,
+        attemptSummary,
       );
-      let relevantRequests = diagnosticRequests;
-      if (diagnosticRequests.length > 0) {
-        setAiStatus("Filtering relevant network requests...");
-        const filterRes = await fetch("/api/ai-triage/filter-requests", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            apiKey,
-            testName: testCase.fullTitle,
-            errorHeadline: attemptSummary.errorHeadline,
-            requests: diagnosticRequests.map((r) => ({
-              url: r.url,
-              method: r.method,
-              status: r.status,
-              statusText: r.statusText,
-              duration: r.duration,
-              resourceType: r.resourceType,
-            })),
-          }),
-        });
-        const filterData = await filterRes.json();
-        if (filterRes.ok && filterData.relevantIndices) {
-          relevantRequests = filterData.relevantIndices.map(
-            (i: number) => diagnosticRequests[i]
-          );
-        }
-        // If filter call fails, fall back to all diagnostic requests
-      }
 
-      // Step 2: Main diagnosis (uses Opus) with only relevant requests
-      setAiStatus("Diagnosing failure...");
       const res = await fetch("/api/ai-triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          apiKey,
-          context: {
-            testName: testCase.fullTitle,
-            filePath: testCase.filePath,
-            category: triage.category,
-            errorHeadline: attemptSummary.errorHeadline,
-            errorStack: currentAttempt?.error?.stack ?? currentAttempt?.error?.message ?? null,
-            divergence: attemptDivergence
-              ? {
-                  stepIndex: attemptDivergence.stepIndex,
-                  failingStepTitle: attemptDivergence.failingStep?.title ?? null,
-                  passingStepTitle: attemptDivergence.passingStep?.title ?? null,
-                  type: attemptDivergence.type,
-                  description: attemptDivergence.description,
-                }
-              : null,
-            evidence: triage.evidence.map((e) => ({
-              type: e.type,
-              description: e.description,
-            })),
-            suggestedNextStep: attemptSummary.suggestedNextStep,
-            attemptStatus: currentAttempt?.status ?? "unknown",
-            passingRun: (() => {
-              const passResult = compare.match.passingTest?.results.find(
-                (r) => r.status === "passed"
-              ) ?? compare.match.passingTest?.results[compare.match.passingTest.results.length - 1];
-              if (!passResult) return null;
-              const divIdx = attemptDivergence?.stepIndex ?? 0;
-              const start = Math.max(0, divIdx - 2);
-              const end = Math.min(passResult.steps.length, divIdx + 3);
-              return {
-                status: passResult.status,
-                duration: passResult.duration,
-                stepsAroundDivergence: passResult.steps.slice(start, end).map((s, i) => ({
-                  index: start + i,
-                  title: s.title,
-                  duration: s.duration,
-                  error: s.error?.message ?? null,
-                })),
-                totalSteps: passResult.steps.length,
-              };
-            })(),
-            relevantRequests: relevantRequests.map((r) => ({
-              url: r.url,
-              method: r.method,
-              status: r.status,
-              statusText: r.statusText,
-              duration: r.duration,
-              requestBody: r.requestBody,
-              responseBody: r.responseBody,
-              responseContentType: r.responseContentType,
-            })),
-          },
-        }),
+        body: JSON.stringify({ apiKey, comparison }),
       });
 
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Request failed");
-      setAiSuggestions((prev) => ({ ...prev, [idx]: data.suggestion }));
+      setAiResults((prev) => ({ ...prev, [idx]: data.result }));
     } catch (e) {
       setAiError(e instanceof Error ? e.message : "AI triage failed");
     } finally {
       setAiLoading(false);
-      setAiStatus(null);
     }
-  }, [apiKey, attemptIdx, testCase, triage, attemptSummary, attemptDivergence, currentAttempt, failingRequests]);
+  }, [apiKey, attemptIdx, testCase, currentAttempt, compare, passingRequests, attemptSummary, networkRequestsMap]);
 
   return (
     <div className="flex flex-col gap-6">
@@ -498,8 +630,8 @@ function DetailPanel({
               className="rounded-md bg-violet-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {aiLoading
-                ? aiStatus ?? "Analyzing..."
-                : aiSuggestions[attemptIdx]
+                ? "Analyzing..."
+                : aiResults[attemptIdx]
                   ? "Re-analyze"
                   : "Diagnose with AI"}
             </button>
@@ -519,10 +651,8 @@ function DetailPanel({
             {aiError}
           </div>
         )}
-        {aiSuggestions[attemptIdx] && (
-          <div className="mt-4 rounded-md bg-violet-950/20 border border-violet-800/30 px-4 py-3 text-sm leading-relaxed text-zinc-300">
-            {aiSuggestions[attemptIdx]}
-          </div>
+        {aiResults[attemptIdx] && (
+          <AiTriageResultCard result={aiResults[attemptIdx]} />
         )}
       </section>
 
@@ -1071,6 +1201,83 @@ function formatBody(body: string, contentType?: string): string {
     } catch { /* not valid JSON */ }
   }
   return body;
+}
+
+// ---- AI Triage Result ----
+
+const AI_CATEGORY_LABELS: Record<string, string> = {
+  app_regression: "App Regression",
+  ui_change_or_outdated_test: "UI/API Change",
+  timing_or_flake: "Timing / Flake",
+  environment_issue: "Environment Issue",
+  unknown: "Unknown",
+};
+
+const AI_CATEGORY_COLORS: Record<string, string> = {
+  app_regression: "bg-red-900/40 text-red-300",
+  ui_change_or_outdated_test: "bg-amber-900/40 text-amber-300",
+  timing_or_flake: "bg-yellow-900/40 text-yellow-300",
+  environment_issue: "bg-blue-900/40 text-blue-300",
+  unknown: "bg-zinc-800 text-zinc-400",
+};
+
+function AiTriageResultCard({ result }: { result: AiTriageResult }) {
+  return (
+    <div className="mt-4 rounded-md bg-violet-950/20 border border-violet-800/30 px-4 py-4 text-sm">
+      {/* Category + confidence */}
+      <div className="flex items-center gap-3 mb-3">
+        <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${AI_CATEGORY_COLORS[result.category] ?? AI_CATEGORY_COLORS.unknown}`}>
+          {AI_CATEGORY_LABELS[result.category] ?? result.category}
+        </span>
+        <span className={`text-xs ${
+          result.confidence === "high" ? "text-emerald-400" :
+          result.confidence === "medium" ? "text-yellow-400" :
+          "text-zinc-500"
+        }`}>
+          {result.confidence} confidence
+        </span>
+      </div>
+
+      {/* Diagnosis */}
+      <p className="leading-relaxed text-zinc-300">{result.diagnosis}</p>
+
+      {/* Evidence */}
+      {result.primaryEvidence.length > 0 && (
+        <div className="mt-3">
+          <h5 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1">Evidence</h5>
+          <ul className="flex flex-col gap-1">
+            {result.primaryEvidence.map((e: string, i: number) => (
+              <li key={i} className="text-xs text-zinc-400 flex items-start gap-2">
+                <span className="text-emerald-600 mt-0.5 shrink-0">+</span>
+                <span>{e}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Counter-evidence */}
+      {result.counterEvidence.length > 0 && (
+        <div className="mt-3">
+          <h5 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1">Counter-evidence</h5>
+          <ul className="flex flex-col gap-1">
+            {result.counterEvidence.map((e: string, i: number) => (
+              <li key={i} className="text-xs text-zinc-500 flex items-start gap-2">
+                <span className="text-zinc-600 mt-0.5 shrink-0">-</span>
+                <span>{e}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Suggested next step */}
+      <div className="mt-3 rounded bg-zinc-800/50 px-3 py-2 text-xs text-zinc-300">
+        <span className="font-medium text-zinc-100">Next step: </span>
+        {result.suggestedNextStep}
+      </div>
+    </div>
+  );
 }
 
 // ---- Small UI components ----
