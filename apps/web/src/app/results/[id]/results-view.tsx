@@ -10,6 +10,7 @@ import type {
   Divergence,
   EvidenceItem,
   Artifact,
+  NetworkRequest,
 } from "@last-green/core";
 import type { CompareResult } from "@last-green/core";
 
@@ -64,63 +65,6 @@ function findFailingStepInChildren(steps: NormalizedStep[]): NormalizedStep | nu
     }
   }
   return null;
-}
-
-const NETWORK_STEP_PATTERNS = [
-  /^apiRequestContext\./i,
-  /^page\.goto/i,
-  /^page\.request\./i,
-  /^request\./i,
-  /^page\.route/i,
-  /^browserContext\.route/i,
-];
-
-/** Extract failing network/API steps from an attempt (flat + recursive) */
-function getFailingNetworkSteps(
-  steps: NormalizedStep[]
-): { title: string; duration: number; error: string }[] {
-  const results: { title: string; duration: number; error: string }[] = [];
-
-  function walk(stepList: NormalizedStep[]) {
-    for (const step of stepList) {
-      if (step.error) {
-        const isNetwork =
-          NETWORK_STEP_PATTERNS.some((p) => p.test(step.title)) ||
-          step.category === "pw:api" && (
-            step.title.toLowerCase().includes("request") ||
-            step.title.toLowerCase().includes("goto") ||
-            step.title.toLowerCase().includes("fetch") ||
-            step.title.toLowerCase().includes("route")
-          );
-        const errorLower = step.error.message?.toLowerCase() ?? "";
-        const isNetworkError =
-          errorLower.includes("econnrefused") ||
-          errorLower.includes("enotfound") ||
-          errorLower.includes("net::err") ||
-          errorLower.includes("econnreset") ||
-          errorLower.includes("fetch") ||
-          errorLower.includes("404") ||
-          errorLower.includes("500") ||
-          errorLower.includes("502") ||
-          errorLower.includes("503") ||
-          errorLower.includes("api") ||
-          errorLower.includes("network");
-
-        if (isNetwork || isNetworkError) {
-          const cleanMsg = (step.error.message ?? "unknown error").replace(/\[\d+m/g, "").split("\n")[0];
-          results.push({
-            title: step.title,
-            duration: step.duration,
-            error: cleanMsg,
-          });
-        }
-      }
-      if (step.children?.length) walk(step.children);
-    }
-  }
-
-  walk(steps);
-  return results;
 }
 
 /** Build a per-attempt summary from an attempt's error and steps */
@@ -199,7 +143,7 @@ export function ResultsView({ id }: { id: string }) {
         {passingRun && <RunMeta label="Passing run" run={passingRun} />}
       </section>
 
-      <div className="grid grid-cols-1 gap-8 lg:grid-cols-[300px_1fr]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[220px_1fr]">
         {/* Test list sidebar */}
         <aside className="flex flex-col gap-1">
           <h2 className="mb-2 text-sm font-semibold uppercase tracking-wider text-zinc-500">
@@ -228,12 +172,15 @@ export function ResultsView({ id }: { id: string }) {
 
         {/* Detail panel */}
         {selected && selectedCompare && (
+          <div className="min-w-0">
           <DetailPanel
             triage={selected}
             compare={selectedCompare}
             hasPassingRun={!!result.passingRun}
             sessionId={id}
+            networkRequests={result.networkRequests ?? {}}
           />
+          </div>
         )}
       </div>
     </div>
@@ -273,11 +220,13 @@ function DetailPanel({
   compare,
   hasPassingRun,
   sessionId,
+  networkRequests: networkRequestsMap,
 }: {
   triage: TriageSummary;
   compare: CompareResult;
   hasPassingRun: boolean;
   sessionId: string;
+  networkRequests: Record<string, NetworkRequest[]>;
 }) {
   const testCase = triage.testCase;
   const attempts = testCase.results;
@@ -294,10 +243,11 @@ function DetailPanel({
   const [aiError, setAiError] = useState<string | null>(null);
 
   // Failing network requests for current attempt
-  const failingRequests = useMemo(
-    () => getFailingNetworkSteps(currentAttempt?.steps ?? []),
-    [currentAttempt]
-  );
+  const failingRequests = useMemo(() => {
+    const key = `${testCase.id}:${currentAttempt?.attempt ?? 0}`;
+    const all = networkRequestsMap[key] ?? [];
+    return all.filter((r) => r.failed);
+  }, [testCase.id, currentAttempt, networkRequestsMap]);
 
   // Compute per-attempt analysis
   const attemptSummary = useMemo(
@@ -327,6 +277,8 @@ function DetailPanel({
     };
   }, [attemptSummary, compare]);
 
+  const [aiStatus, setAiStatus] = useState<string | null>(null);
+
   const requestAiTriage = useCallback(async () => {
     if (!apiKey.trim()) {
       setShowKeyInput(true);
@@ -335,9 +287,42 @@ function DetailPanel({
     localStorage.setItem("lg-api-key", apiKey);
     setAiLoading(true);
     setAiError(null);
+    setAiStatus(null);
 
     const idx = attemptIdx;
     try {
+      // Step 1: Filter network requests for relevance (uses Haiku)
+      let relevantRequests = failingRequests;
+      if (failingRequests.length > 0) {
+        setAiStatus("Filtering relevant network requests...");
+        const filterRes = await fetch("/api/ai-triage/filter-requests", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            apiKey,
+            testName: testCase.fullTitle,
+            errorHeadline: attemptSummary.errorHeadline,
+            requests: failingRequests.map((r) => ({
+              url: r.url,
+              method: r.method,
+              status: r.status,
+              statusText: r.statusText,
+              duration: r.duration,
+              resourceType: r.resourceType,
+            })),
+          }),
+        });
+        const filterData = await filterRes.json();
+        if (filterRes.ok && filterData.relevantIndices) {
+          relevantRequests = filterData.relevantIndices.map(
+            (i: number) => failingRequests[i]
+          );
+        }
+        // If filter call fails, fall back to all requests
+      }
+
+      // Step 2: Main diagnosis (uses Opus) with only relevant requests
+      setAiStatus("Diagnosing failure...");
       const res = await fetch("/api/ai-triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -384,7 +369,16 @@ function DetailPanel({
                 totalSteps: passResult.steps.length,
               };
             })(),
-            failingRequests,
+            relevantRequests: relevantRequests.map((r) => ({
+              url: r.url,
+              method: r.method,
+              status: r.status,
+              statusText: r.statusText,
+              duration: r.duration,
+              requestBody: r.requestBody,
+              responseBody: r.responseBody,
+              responseContentType: r.responseContentType,
+            })),
           },
         }),
       });
@@ -396,6 +390,7 @@ function DetailPanel({
       setAiError(e instanceof Error ? e.message : "AI triage failed");
     } finally {
       setAiLoading(false);
+      setAiStatus(null);
     }
   }, [apiKey, attemptIdx, testCase, triage, attemptSummary, attemptDivergence, currentAttempt, failingRequests]);
 
@@ -451,24 +446,12 @@ function DetailPanel({
         </section>
       )}
 
-      {/* Failing network requests for this attempt */}
+      {/* Non-2xx network requests for this attempt */}
       {failingRequests.length > 0 && (
-        <section className="rounded-lg border border-orange-800/30 bg-orange-950/10 p-6">
-          <h4 className="text-sm font-semibold uppercase tracking-wider text-orange-400">
-            Failing network requests{attempts.length > 1 ? ` — attempt ${attemptIdx + 1}` : ""} ({failingRequests.length})
-          </h4>
-          <div className="mt-3 flex flex-col gap-2">
-            {failingRequests.map((r, i) => (
-              <div key={i} className="rounded-md bg-zinc-900 px-4 py-3">
-                <div className="flex items-center justify-between">
-                  <span className="font-mono text-sm text-zinc-200">{r.title}</span>
-                  <span className="text-xs text-zinc-500">{r.duration}ms</span>
-                </div>
-                <div className="mt-1 text-sm text-orange-300/80">{r.error}</div>
-              </div>
-            ))}
-          </div>
-        </section>
+        <NetworkRequestsPanel
+          requests={failingRequests}
+          attemptLabel={attempts.length > 1 ? attemptIdx + 1 : undefined}
+        />
       )}
 
       <EvidenceCard
@@ -479,11 +462,11 @@ function DetailPanel({
 
       {/* AI Triage */}
       <section className="rounded-lg bg-zinc-900 p-6">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
           <h4 className="text-sm font-semibold uppercase tracking-wider text-zinc-500">
             AI Diagnosis
           </h4>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             {showKeyInput && (
               <input
                 type="password"
@@ -510,7 +493,11 @@ function DetailPanel({
               disabled={aiLoading}
               className="rounded-md bg-violet-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {aiLoading ? "Analyzing..." : aiSuggestions[attemptIdx] ? "Re-analyze" : "Diagnose with AI"}
+              {aiLoading
+                ? aiStatus ?? "Analyzing..."
+                : aiSuggestions[attemptIdx]
+                  ? "Re-analyze"
+                  : "Diagnose with AI"}
             </button>
             {apiKey && (
               <button
@@ -611,20 +598,20 @@ function DivergenceCard({
           Significance: {divergence.significance}
         </span>
       </div>
-      <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
-        <div>
+      <div className="mt-4 grid grid-cols-2 gap-4 text-sm overflow-hidden">
+        <div className="min-w-0">
           <span className="text-xs font-semibold uppercase text-red-400">
             Failing step
           </span>
-          <p className="mt-1 font-mono text-zinc-300">
+          <p className="mt-1 font-mono text-xs text-zinc-300 truncate">
             {divergence.failingStep?.title ?? "—"}
           </p>
         </div>
-        <div>
+        <div className="min-w-0">
           <span className="text-xs font-semibold uppercase text-emerald-400">
             Passing step
           </span>
-          <p className="mt-1 font-mono text-zinc-300">
+          <p className="mt-1 font-mono text-xs text-zinc-300 truncate">
             {divergence.passingStep?.title ?? "—"}
           </p>
         </div>
@@ -731,7 +718,7 @@ function ErrorBlock({ message, stack }: { message: string; stack?: string }) {
 
   return (
     <div className="mt-3">
-      <div className="rounded-t-md bg-red-950/40 px-4 py-2 text-sm font-medium text-red-300">
+      <div className="rounded-t-md bg-red-950/40 px-4 py-2 text-sm font-medium text-red-300 break-words">
         {headline}
       </div>
       {detail && (
@@ -769,8 +756,14 @@ function AttemptSteps({
         <h4 className="text-sm font-semibold uppercase tracking-wider text-zinc-500">
           Test steps{compare.match.failingTest.results.length > 1 ? ` — attempt ${attemptIdx + 1}` : ""}
         </h4>
-        <div className="mt-4 overflow-x-auto">
-          <table className="w-full text-left text-sm">
+        <div className="mt-4 overflow-hidden">
+          <table className="w-full table-fixed text-left text-xs">
+            <colgroup>
+              <col className="w-8" />
+              <col className="w-16" />
+              <col />
+              <col className="w-16" />
+            </colgroup>
             <thead>
               <tr className="border-b border-zinc-800 text-xs uppercase text-zinc-500">
                 <th className="px-2 py-2">#</th>
@@ -789,7 +782,7 @@ function AttemptSteps({
                       hasError ? "bg-red-950/20" : ""
                     }`}
                   >
-                    <td className="px-2 py-1.5 font-mono text-zinc-600">{i}</td>
+                    <td className="px-2 py-1.5 text-zinc-600">{i}</td>
                     <td className="px-2 py-1.5">
                       <span
                         className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
@@ -798,18 +791,18 @@ function AttemptSteps({
                             : "bg-emerald-900/40 text-emerald-300"
                         }`}
                       >
-                        {hasError ? "failed" : "passed"}
+                        {hasError ? "fail" : "pass"}
                       </span>
                     </td>
-                    <td className="px-2 py-1.5 font-mono text-zinc-300">
+                    <td className="px-2 py-1.5 text-zinc-300 truncate">
                       {step.title}
                       {step.error?.message && (
-                        <div className="mt-1 text-xs text-red-400">
-                          {step.error.message.slice(0, 120)}
+                        <div className="mt-1 text-xs text-red-400 truncate">
+                          {step.error.message.slice(0, 80)}
                         </div>
                       )}
                     </td>
-                    <td className="px-2 py-1.5 font-mono text-zinc-500">
+                    <td className="px-2 py-1.5 text-zinc-500">
                       {step.duration}ms
                     </td>
                   </tr>
@@ -830,8 +823,15 @@ function AttemptSteps({
       <h4 className="text-sm font-semibold uppercase tracking-wider text-zinc-500">
         Step-by-step comparison{compare.match.failingTest.results.length > 1 ? ` — attempt ${attemptIdx + 1}` : ""}
       </h4>
-      <div className="mt-4 overflow-x-auto">
-        <table className="w-full text-left text-sm">
+      <div className="mt-4 overflow-hidden">
+        <table className="w-full table-fixed text-left text-xs">
+          <colgroup>
+            <col className="w-8" />
+            <col />
+            <col className="w-14" />
+            <col />
+            <col className="w-14" />
+          </colgroup>
           <thead>
             <tr className="border-b border-zinc-800 text-xs uppercase text-zinc-500">
               <th className="px-2 py-2">#</th>
@@ -858,22 +858,22 @@ function AttemptSteps({
                     isDivergent ? "bg-amber-950/20" : ""
                   }`}
                 >
-                  <td className="px-2 py-1.5 font-mono text-zinc-600">{i}</td>
-                  <td className="px-2 py-1.5 font-mono text-zinc-300">
+                  <td className="px-2 py-1.5 text-zinc-600">{i}</td>
+                  <td className="px-2 py-1.5 text-zinc-300 truncate">
                     {fs?.title ?? "—"}
                     {fs?.error?.message && (
-                      <span className="ml-2 text-red-400">
-                        {fs.error.message.slice(0, 60)}
+                      <span className="ml-1 text-red-400">
+                        {fs.error.message.slice(0, 40)}
                       </span>
                     )}
                   </td>
-                  <td className="px-2 py-1.5 font-mono text-zinc-500">
+                  <td className="px-2 py-1.5 text-zinc-500">
                     {fs?.duration ?? "—"}
                   </td>
-                  <td className="px-2 py-1.5 font-mono text-zinc-300">
+                  <td className="px-2 py-1.5 text-zinc-300 truncate">
                     {ps?.title ?? "—"}
                   </td>
-                  <td className="px-2 py-1.5 font-mono text-zinc-500">
+                  <td className="px-2 py-1.5 text-zinc-500">
                     {ps?.duration ?? "—"}
                   </td>
                 </tr>
@@ -884,6 +884,189 @@ function AttemptSteps({
       </div>
     </section>
   );
+}
+
+// ---- Network Requests Panel ----
+
+const STATUS_FILTERS = [
+  { label: "All", value: "all" },
+  { label: "4xx", value: "4xx" },
+  { label: "5xx", value: "5xx" },
+  { label: "3xx", value: "3xx" },
+  { label: "ERR", value: "err" },
+] as const;
+
+function NetworkRequestsPanel({
+  requests,
+  attemptLabel,
+}: {
+  requests: NetworkRequest[];
+  attemptLabel?: number;
+}) {
+  const [urlFilter, setUrlFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+
+  const filtered = useMemo(() => {
+    return requests.filter((r) => {
+      if (urlFilter && !r.url.toLowerCase().includes(urlFilter.toLowerCase())) return false;
+      if (statusFilter === "4xx" && (r.status < 400 || r.status >= 500)) return false;
+      if (statusFilter === "5xx" && r.status < 500) return false;
+      if (statusFilter === "3xx" && (r.status < 300 || r.status >= 400)) return false;
+      if (statusFilter === "err" && r.status > 0) return false;
+      return true;
+    });
+  }, [requests, urlFilter, statusFilter]);
+
+  return (
+    <section className="rounded-lg border border-orange-800/30 bg-orange-950/10 p-6">
+      <h4 className="text-sm font-semibold uppercase tracking-wider text-orange-400">
+        Non-2xx network requests{attemptLabel ? ` — attempt ${attemptLabel}` : ""} ({filtered.length}/{requests.length})
+      </h4>
+
+      {/* Filters */}
+      <div className="mt-3 flex items-center gap-3 flex-wrap">
+        <input
+          type="text"
+          placeholder="Filter by URL..."
+          value={urlFilter}
+          onChange={(e) => setUrlFilter(e.target.value)}
+          className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs text-zinc-200 placeholder-zinc-500 focus:border-orange-500 focus:outline-none flex-1 min-w-[150px] max-w-[300px]"
+        />
+        <div className="flex gap-1">
+          {STATUS_FILTERS.map((f) => (
+            <button
+              key={f.value}
+              onClick={() => setStatusFilter(statusFilter === f.value ? "all" : f.value)}
+              className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
+                statusFilter === f.value
+                  ? "bg-orange-700 text-white"
+                  : "bg-zinc-800 text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Request list */}
+      <div className="mt-3 flex flex-col gap-1">
+        {filtered.map((r, i) => (
+          <div key={i} className="rounded-md bg-zinc-900 overflow-hidden">
+            <button
+              onClick={() => setExpandedIdx(expandedIdx === i ? null : i)}
+              className="w-full px-4 py-2.5 text-left hover:bg-zinc-800/50 transition-colors"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0 overflow-hidden">
+                  <span className="shrink-0 rounded bg-zinc-800 px-1.5 py-0.5 text-xs font-mono text-zinc-400">
+                    {r.method}
+                  </span>
+                  <span className="font-mono text-xs text-zinc-200 truncate">{r.url}</span>
+                </div>
+                <div className="flex items-center gap-3 shrink-0">
+                  <StatusBadge status={r.status} />
+                  <span className="text-xs text-zinc-500 w-12 text-right">{r.duration}ms</span>
+                  <span className="text-zinc-600 text-xs">{expandedIdx === i ? "▲" : "▼"}</span>
+                </div>
+              </div>
+            </button>
+
+            {expandedIdx === i && (
+              <div className="border-t border-zinc-800 px-4 py-3 text-xs">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  {/* Request side */}
+                  <div className="min-w-0">
+                    <h5 className="font-semibold text-zinc-400 uppercase tracking-wider mb-2">Request</h5>
+                    {r.requestContentType && (
+                      <div className="text-zinc-500 mb-1">Content-Type: {r.requestContentType}</div>
+                    )}
+                    {r.requestHeaders && r.requestHeaders.length > 0 && (
+                      <details className="mb-2">
+                        <summary className="cursor-pointer text-zinc-500 hover:text-zinc-300">
+                          Headers ({r.requestHeaders.length})
+                        </summary>
+                        <pre className="mt-1 max-h-40 overflow-auto rounded bg-zinc-950 p-2 text-zinc-400 whitespace-pre-wrap break-all">
+                          {r.requestHeaders.map((h) => `${h.name}: ${h.value}`).join("\n")}
+                        </pre>
+                      </details>
+                    )}
+                    {r.requestBody ? (
+                      <div>
+                        <div className="text-zinc-500 mb-1">Body:</div>
+                        <pre className="max-h-48 overflow-auto rounded bg-zinc-950 p-2 text-zinc-300 whitespace-pre-wrap break-all">
+                          {formatBody(r.requestBody, r.requestContentType)}
+                        </pre>
+                      </div>
+                    ) : (
+                      <div className="text-zinc-600 italic">No request body</div>
+                    )}
+                  </div>
+
+                  {/* Response side */}
+                  <div className="min-w-0">
+                    <h5 className="font-semibold text-zinc-400 uppercase tracking-wider mb-2">
+                      Response — {r.status <= 0 ? "Failed" : r.status} {r.statusText}
+                    </h5>
+                    {r.responseContentType && (
+                      <div className="text-zinc-500 mb-1">Content-Type: {r.responseContentType}</div>
+                    )}
+                    {r.responseHeaders && r.responseHeaders.length > 0 && (
+                      <details className="mb-2">
+                        <summary className="cursor-pointer text-zinc-500 hover:text-zinc-300">
+                          Headers ({r.responseHeaders.length})
+                        </summary>
+                        <pre className="mt-1 max-h-40 overflow-auto rounded bg-zinc-950 p-2 text-zinc-400 whitespace-pre-wrap break-all">
+                          {r.responseHeaders.map((h) => `${h.name}: ${h.value}`).join("\n")}
+                        </pre>
+                      </details>
+                    )}
+                    {r.responseBody ? (
+                      <div>
+                        <div className="text-zinc-500 mb-1">Body:</div>
+                        <pre className="max-h-48 overflow-auto rounded bg-zinc-950 p-2 text-zinc-300 whitespace-pre-wrap break-all">
+                          {formatBody(r.responseBody, r.responseContentType)}
+                        </pre>
+                      </div>
+                    ) : (
+                      <div className="text-zinc-600 italic">No response body</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+        {filtered.length === 0 && (
+          <div className="text-zinc-600 text-xs py-2">No requests match filters.</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function StatusBadge({ status }: { status: number }) {
+  const cls =
+    status >= 500 ? "bg-red-900/50 text-red-300" :
+    status >= 400 ? "bg-orange-900/50 text-orange-300" :
+    status >= 300 ? "bg-yellow-900/50 text-yellow-300" :
+    status <= 0 ? "bg-red-900/50 text-red-300" :
+    "bg-zinc-800 text-zinc-400";
+  return (
+    <span className={`rounded px-1.5 py-0.5 text-xs font-bold ${cls}`}>
+      {status <= 0 ? "ERR" : status}
+    </span>
+  );
+}
+
+function formatBody(body: string, contentType?: string): string {
+  if (contentType?.includes("json") || body.startsWith("{") || body.startsWith("[")) {
+    try {
+      return JSON.stringify(JSON.parse(body), null, 2);
+    } catch { /* not valid JSON */ }
+  }
+  return body;
 }
 
 // ---- Small UI components ----

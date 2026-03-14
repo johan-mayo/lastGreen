@@ -171,6 +171,22 @@ export interface Artifact {
   path: string;
 }
 
+export interface NetworkRequest {
+  url: string;
+  method: string;
+  status: number;
+  statusText: string;
+  duration: number;
+  resourceType?: string;
+  failed: boolean;
+  requestHeaders?: { name: string; value: string }[];
+  requestBody?: string;
+  requestContentType?: string;
+  responseHeaders?: { name: string; value: string }[];
+  responseBody?: string;
+  responseContentType?: string;
+}
+
 // ---- Comparison models ----
 
 export interface TestMatch {

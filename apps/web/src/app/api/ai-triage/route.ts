@@ -28,7 +28,16 @@ export async function POST(req: NextRequest) {
           stepsAroundDivergence: { index: number; title: string; duration: number; error: string | null }[];
           totalSteps: number;
         } | null;
-        failingRequests: { title: string; duration: number; error: string }[];
+        relevantRequests: {
+          url: string;
+          method: string;
+          status: number;
+          statusText: string;
+          duration: number;
+          requestBody?: string;
+          responseBody?: string;
+          responseContentType?: string;
+        }[];
       };
     };
 
@@ -79,12 +88,21 @@ export async function POST(req: NextRequest) {
     } else {
       parts.push(`\nNo passing run provided (single-report mode).`);
     }
-    if (context.failingRequests.length > 0) {
+    if (context.relevantRequests.length > 0) {
       parts.push(
-        `\nFailing network/API requests (${context.failingRequests.length}):`,
-        ...context.failingRequests.map(
-          (r) => `  "${r.title}" ${r.duration}ms — ${r.error}`
-        )
+        `\nRelevant failing network requests (pre-filtered for relevance, ${context.relevantRequests.length} total):`,
+        ...context.relevantRequests.map((r) => {
+          const lines = [
+            `  ${r.method} ${r.url} → ${r.status <= 0 ? "FAILED" : r.status} ${r.statusText} (${r.duration}ms)`,
+          ];
+          if (r.requestBody) {
+            lines.push(`    Request body: ${r.requestBody.slice(0, 500)}`);
+          }
+          if (r.responseBody) {
+            lines.push(`    Response body: ${r.responseBody.slice(0, 500)}`);
+          }
+          return lines.join("\n");
+        })
       );
     }
     if (context.evidence.length > 0) {
