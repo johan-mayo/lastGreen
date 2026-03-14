@@ -1,14 +1,114 @@
 import JSZip from "jszip";
-import type { PlaywrightJsonReport } from "../types/index.js";
+import type { PlaywrightJsonReport, PlaywrightSuite, PlaywrightSpec, PlaywrightTest, PlaywrightTestResult, PlaywrightStep, PlaywrightAttachment, PlaywrightError } from "../types/index.js";
 import type { IngestResult } from "./index.js";
 
-const BASE64_PATTERN = /playwrightReportBase64\s*=\s*"([^"]+)"/;
-const BASE64_PATTERN_SINGLE = /playwrightReportBase64\s*=\s*'([^']+)'/;
+// ---- HTML report embedded data types ----
+
+interface HtmlReportJson {
+  metadata?: Record<string, unknown>;
+  startTime: number | string;
+  duration: number;
+  files: HtmlReportFile[];
+  projectNames: string[];
+  stats: {
+    total: number;
+    expected: number;
+    unexpected: number;
+    flaky: number;
+    skipped: number;
+    ok: boolean;
+  };
+  errors: unknown[];
+  options?: Record<string, unknown>;
+}
+
+interface HtmlReportFile {
+  fileId: string;
+  fileName: string;
+  tests: HtmlReportTestSummary[];
+  stats?: Record<string, unknown>;
+}
+
+interface HtmlReportTestSummary {
+  testId: string;
+  title: string;
+  projectName: string;
+  location: { file: string; line: number; column: number };
+  duration: number;
+  annotations: unknown[];
+  tags: string[];
+  outcome: "expected" | "unexpected" | "flaky" | "skipped";
+  path: string[];
+  ok: boolean;
+  results?: HtmlReportResult[];
+}
+
+interface HtmlReportDetailFile {
+  fileId: string;
+  fileName: string;
+  tests: HtmlReportTestDetail[];
+}
+
+interface HtmlReportTestDetail {
+  testId: string;
+  title: string;
+  projectName: string;
+  location: { file: string; line: number; column: number };
+  duration: number;
+  annotations: unknown[];
+  tags: string[];
+  outcome: "expected" | "unexpected" | "flaky" | "skipped";
+  path: string[];
+  results: HtmlReportResult[];
+  ok: boolean;
+}
+
+interface HtmlReportResult {
+  duration: number;
+  startTime: string;
+  retry: number;
+  steps: HtmlReportStep[];
+  errors: HtmlReportError[];
+  status: "passed" | "failed" | "timedOut" | "skipped" | "interrupted";
+  annotations: unknown[];
+  attachments: HtmlReportAttachment[];
+}
+
+interface HtmlReportStep {
+  title: string;
+  startTime: string;
+  duration: number;
+  steps: HtmlReportStep[];
+  attachments: HtmlReportAttachment[];
+  count: number;
+  skipped: boolean;
+  error?: HtmlReportError;
+}
+
+interface HtmlReportError {
+  message: string;
+  stack?: string;
+  value?: string;
+  snippet?: string;
+  location?: { file: string; line: number; column: number };
+}
+
+interface HtmlReportAttachment {
+  name: string;
+  contentType: string;
+  path?: string;
+  body?: string;
+}
+
+// ---- Extraction patterns ----
+
+// Real Playwright: <script id="playwrightReportBase64" type="application/zip">data:application/zip;base64,...</script>
+const SCRIPT_TAG_PATTERN = /<script[^>]*id=["']playwrightReportBase64["'][^>]*>([\s\S]*?)<\/script>/;
+// Fixture/older format: window.playwrightReportBase64 = "..."
+const JS_VAR_PATTERN = /playwrightReportBase64\s*=\s*["']([A-Za-z0-9+/=]+)["']/;
 
 /**
  * Ingest a Playwright HTML report file.
- * The HTML report embeds test data as a base64-encoded ZIP
- * stored in a `playwrightReportBase64` JS variable.
  */
 export async function ingestHtmlReport(
   html: string,
@@ -34,7 +134,6 @@ export async function ingestHtmlReport(
 
 /**
  * Ingest a zipped playwright-report/ directory.
- * Looks for index.html inside the zip, then extracts the embedded data.
  */
 export async function ingestZipReport(
   zipData: Buffer,
@@ -42,23 +141,20 @@ export async function ingestZipReport(
 ): Promise<IngestResult> {
   const outerZip = await JSZip.loadAsync(zipData);
 
-  // First, check if there's a report.json directly in the zip (JSON report zipped up)
+  // Check for a direct report.json (standard JSON reporter output, zipped)
   const reportJson = findFile(outerZip, "report.json");
   if (reportJson) {
     const json = await reportJson.async("string");
-    let parsed: unknown;
     try {
-      parsed = JSON.parse(json);
-    } catch {
-      throw new Error("Found report.json in zip but it contains invalid JSON");
-    }
-    if (isPlaywrightReport(parsed)) {
-      return {
-        report: parsed,
-        artifactDir,
-        sourcePath: "<zip-upload:report.json>",
-      };
-    }
+      const parsed = JSON.parse(json);
+      if (isStandardReport(parsed)) {
+        return {
+          report: parsed,
+          artifactDir,
+          sourcePath: "<zip-upload:report.json>",
+        };
+      }
+    } catch { /* fall through */ }
   }
 
   // Look for index.html (the HTML report)
@@ -84,165 +180,283 @@ export async function ingestZipReport(
 }
 
 /**
- * Extract the base64-encoded report data from the HTML content.
+ * Extract base64 from HTML content. Handles both real Playwright format
+ * (script tag with data URI) and simpler formats (JS variable assignment).
  */
 function extractBase64(html: string): string | null {
-  const match = html.match(BASE64_PATTERN) ?? html.match(BASE64_PATTERN_SINGLE);
-  return match?.[1] ?? null;
+  // Try the real Playwright format: <script id="playwrightReportBase64" ...>data:...;base64,XXX</script>
+  const scriptMatch = html.match(SCRIPT_TAG_PATTERN);
+  if (scriptMatch) {
+    const content = scriptMatch[1].trim();
+    // Strip data URI prefix if present
+    const commaIdx = content.indexOf(",");
+    if (commaIdx !== -1) {
+      return content.slice(commaIdx + 1);
+    }
+    return content;
+  }
+
+  // Try JS variable assignment: playwrightReportBase64 = "XXX"
+  const varMatch = html.match(JS_VAR_PATTERN);
+  if (varMatch) {
+    return varMatch[1];
+  }
+
+  return null;
 }
 
 /**
- * Extract and parse the Playwright report JSON from an inner zip buffer.
- * The zip contains JSON entries — we look for the main report data.
+ * Extract Playwright report from the inner ZIP.
+ * Handles both formats:
+ * - Standard JSON reporter (has `suites` array)
+ * - HTML reporter (has `files` array + separate detail JSON files)
  */
 async function extractReportFromZip(
   zipBuffer: Buffer
 ): Promise<PlaywrightJsonReport> {
   const zip = await JSZip.loadAsync(zipBuffer);
-  const entries = Object.keys(zip.files);
 
-  // The embedded zip typically contains JSON files that together form the report.
-  // Look for common patterns: "report.json", "index.json", or numbered JSON files.
+  // Try report.json first
+  const reportFile = zip.file("report.json");
+  if (reportFile) {
+    const content = await reportFile.async("string");
+    const parsed = JSON.parse(content);
 
-  // Try direct report/index JSON first
-  for (const name of ["report.json", "index.json"]) {
-    const file = zip.file(name);
-    if (file) {
-      const content = await file.async("string");
-      const parsed = JSON.parse(content);
-      if (isPlaywrightReport(parsed)) return parsed;
+    // Standard JSON reporter format — return directly
+    if (isStandardReport(parsed)) {
+      return parsed;
+    }
+
+    // HTML reporter format — convert to standard format
+    if (isHtmlReport(parsed)) {
+      return await convertHtmlReport(parsed, zip);
     }
   }
 
-  // Playwright HTML reports split data across numbered JSON files.
-  // Collect all JSON entries and try to assemble.
-  const jsonEntries: { name: string; content: string }[] = [];
-  for (const entry of entries) {
-    if (entry.endsWith(".json") && !zip.files[entry].dir) {
-      const content = await zip.files[entry].async("string");
-      jsonEntries.push({ name: entry, content });
-    }
+  // Try index.json
+  const indexFile = zip.file("index.json");
+  if (indexFile) {
+    const content = await indexFile.async("string");
+    const parsed = JSON.parse(content);
+    if (isStandardReport(parsed)) return parsed;
+    if (isHtmlReport(parsed)) return await convertHtmlReport(parsed, zip);
   }
 
-  if (jsonEntries.length === 0) {
-    throw new Error("No JSON data found in the embedded report zip");
-  }
+  // Try all JSON files
+  const jsonFiles = Object.keys(zip.files).filter(
+    (f) => f.endsWith(".json") && !zip.files[f].dir
+  );
 
-  // If there's only one JSON entry, try parsing it directly
-  if (jsonEntries.length === 1) {
-    const parsed = JSON.parse(jsonEntries[0].content);
-    if (isPlaywrightReport(parsed)) return parsed;
-  }
-
-  // Multiple JSON entries — Playwright HTML reports use this format:
-  // The entries contain partial report data that needs assembly.
-  // Try each entry to find the main report structure.
-  for (const entry of jsonEntries) {
+  for (const name of jsonFiles) {
     try {
-      const parsed = JSON.parse(entry.content);
-      if (isPlaywrightReport(parsed)) return parsed;
-    } catch {
-      // skip malformed entries
-    }
+      const content = await zip.files[name].async("string");
+      const parsed = JSON.parse(content);
+      if (isStandardReport(parsed)) return parsed;
+      if (isHtmlReport(parsed)) return await convertHtmlReport(parsed, zip);
+    } catch { /* skip */ }
   }
-
-  // Last resort: try to assemble from the JSON entries
-  // Playwright stores report data as an array of test file entries
-  // Try merging them into a synthetic report
-  const assembled = tryAssembleReport(jsonEntries);
-  if (assembled) return assembled;
 
   throw new Error(
-    "Found JSON data in report zip but could not parse it as a Playwright report. " +
-      `Entries found: ${entries.join(", ")}`
+    "Could not parse Playwright report data from the embedded zip. " +
+      `Found ${jsonFiles.length} JSON files but none matched expected formats.`
   );
 }
 
 /**
- * Try to assemble a PlaywrightJsonReport from multiple JSON entries.
- * Playwright HTML reports may store data as separate file-level entries.
+ * Convert HTML reporter format to standard PlaywrightJsonReport format.
+ * Loads detail data from per-file JSON entries in the zip.
  */
-function tryAssembleReport(
-  entries: { name: string; content: string }[]
-): PlaywrightJsonReport | null {
-  // Each entry might be a test file's data. Try to find one that looks like
-  // it has the full report structure or has suites we can merge.
-  const suites: unknown[] = [];
-  let config: unknown = null;
-  let stats: unknown = null;
+async function convertHtmlReport(
+  htmlReport: HtmlReportJson,
+  zip: JSZip
+): Promise<PlaywrightJsonReport> {
+  // Build a map of fileId -> detail data from the zip
+  const detailMap = new Map<string, HtmlReportTestDetail[]>();
 
-  for (const entry of entries) {
-    try {
-      const parsed = JSON.parse(entry.content);
-
-      // If this entry has the full report shape, return it
-      if (isPlaywrightReport(parsed)) return parsed;
-
-      // If it's an object with suites, collect them
-      if (parsed && typeof parsed === "object") {
-        const record = parsed as Record<string, unknown>;
-        if (Array.isArray(record.suites)) {
-          suites.push(...record.suites);
-          if (record.config) config = record.config;
-          if (record.stats) stats = record.stats;
-        }
-        // If the entry itself looks like a suite
-        if (record.title !== undefined && Array.isArray(record.specs)) {
-          suites.push(record);
-        }
-      }
-
-      // If it's an array, each element might be a suite
-      if (Array.isArray(parsed)) {
-        for (const item of parsed) {
-          if (item && typeof item === "object" && "specs" in item) {
-            suites.push(item);
-          }
-        }
-      }
-    } catch {
-      // skip
+  for (const file of htmlReport.files) {
+    const detailFileName = `${file.fileId}.json`;
+    const detailEntry = zip.file(detailFileName);
+    if (detailEntry) {
+      try {
+        const content = await detailEntry.async("string");
+        const detail = JSON.parse(content) as HtmlReportDetailFile;
+        detailMap.set(file.fileId, detail.tests);
+      } catch { /* skip */ }
     }
   }
 
-  if (suites.length === 0) return null;
+  // Convert each file to a suite
+  const suites: PlaywrightSuite[] = htmlReport.files.map((file) =>
+    convertFileToSuite(file, detailMap.get(file.fileId))
+  );
+
+  const startTime =
+    typeof htmlReport.startTime === "number"
+      ? new Date(htmlReport.startTime).toISOString()
+      : htmlReport.startTime;
 
   return {
-    config: (config as PlaywrightJsonReport["config"]) ?? {
-      projects: [],
+    config: {
+      configFile: (htmlReport.metadata?.["configFile"] as string) ?? undefined,
+      rootDir: (htmlReport.metadata?.["rootDir"] as string) ?? undefined,
+      metadata: htmlReport.metadata,
+      projects: htmlReport.projectNames.map((name) => ({
+        id: name,
+        name,
+      })),
     },
-    suites: suites as PlaywrightJsonReport["suites"],
-    errors: [],
-    stats: (stats as PlaywrightJsonReport["stats"]) ?? {
-      startTime: new Date().toISOString(),
-      duration: 0,
-      expected: 0,
-      unexpected: 0,
-      flaky: 0,
-      skipped: 0,
+    suites,
+    errors: htmlReport.errors,
+    stats: {
+      startTime,
+      duration: htmlReport.duration,
+      expected: htmlReport.stats.expected,
+      unexpected: htmlReport.stats.unexpected,
+      flaky: htmlReport.stats.flaky,
+      skipped: htmlReport.stats.skipped,
     },
-  } as PlaywrightJsonReport;
+  };
 }
 
-function isPlaywrightReport(obj: unknown): obj is PlaywrightJsonReport {
+function convertFileToSuite(
+  file: HtmlReportFile,
+  details: HtmlReportTestDetail[] | undefined
+): PlaywrightSuite {
+  // Build a detail lookup by testId
+  const detailById = new Map<string, HtmlReportTestDetail>();
+  if (details) {
+    for (const d of details) {
+      detailById.set(d.testId, d);
+    }
+  }
+
+  const specs: PlaywrightSpec[] = file.tests.map((testSummary) => {
+    const detail = detailById.get(testSummary.testId);
+    return convertTestToSpec(testSummary, detail);
+  });
+
+  return {
+    title: file.fileName,
+    file: file.fileName,
+    line: 0,
+    column: 0,
+    specs,
+    suites: [],
+  };
+}
+
+function convertTestToSpec(
+  summary: HtmlReportTestSummary,
+  detail: HtmlReportTestDetail | undefined
+): PlaywrightSpec {
+  const results: PlaywrightTestResult[] = (detail?.results ?? summary.results ?? []).map(
+    (r, i) => convertResult(r, i)
+  );
+
+  const status = mapOutcome(summary.outcome);
+
+  const test: PlaywrightTest = {
+    timeout: 0,
+    annotations: summary.annotations,
+    expectedStatus: "passed",
+    projectId: summary.projectName,
+    projectName: summary.projectName,
+    status,
+    results,
+  };
+
+  return {
+    title: summary.title,
+    ok: summary.ok,
+    tags: summary.tags,
+    tests: [test],
+    id: summary.testId,
+    file: summary.location.file,
+    line: summary.location.line,
+    column: summary.location.column,
+  };
+}
+
+function convertResult(result: HtmlReportResult, index: number): PlaywrightTestResult {
+  return {
+    workerIndex: 0,
+    status: result.status,
+    duration: result.duration,
+    retry: result.retry ?? index,
+    startTime: result.startTime,
+    errors: result.errors.map(convertError),
+    stdout: [],
+    stderr: [],
+    attachments: result.attachments.map(convertAttachment),
+    steps: result.steps.map(convertStep),
+  };
+}
+
+function convertStep(step: HtmlReportStep): PlaywrightStep {
+  return {
+    title: step.title,
+    category: "pw:api",
+    startTime: step.startTime,
+    duration: step.duration,
+    error: step.error ? convertError(step.error) : undefined,
+    steps: step.steps?.map(convertStep),
+  };
+}
+
+function convertError(error: HtmlReportError): PlaywrightError {
+  return {
+    message: error.message,
+    stack: error.stack,
+    value: error.value,
+    snippet: error.snippet,
+    location: error.location,
+  };
+}
+
+function convertAttachment(att: HtmlReportAttachment): PlaywrightAttachment {
+  return {
+    name: att.name,
+    contentType: att.contentType,
+    path: att.path,
+    body: att.body,
+  };
+}
+
+function mapOutcome(
+  outcome: "expected" | "unexpected" | "flaky" | "skipped"
+): PlaywrightTest["status"] {
+  switch (outcome) {
+    case "expected": return "expected";
+    case "unexpected": return "unexpected";
+    case "flaky": return "flaky";
+    case "skipped": return "skipped";
+  }
+}
+
+// ---- Type guards ----
+
+function isStandardReport(obj: unknown): obj is PlaywrightJsonReport {
   if (typeof obj !== "object" || obj === null) return false;
-  const record = obj as Record<string, unknown>;
-  return "suites" in record && Array.isArray(record.suites);
+  const r = obj as Record<string, unknown>;
+  return "suites" in r && Array.isArray(r.suites);
+}
+
+function isHtmlReport(obj: unknown): obj is HtmlReportJson {
+  if (typeof obj !== "object" || obj === null) return false;
+  const r = obj as Record<string, unknown>;
+  return "files" in r && Array.isArray(r.files) && "stats" in r;
 }
 
 /**
- * Find a file in a zip by name, checking both at root and nested one level.
+ * Find a file in a zip by name, checking root and one directory deep.
  */
 function findFile(zip: JSZip, filename: string): JSZip.JSZipObject | null {
-  // Check root
   const direct = zip.file(filename);
   if (direct) return direct;
 
-  // Check one directory deep (e.g. playwright-report/index.html)
   for (const [path, entry] of Object.entries(zip.files)) {
     if (!entry.dir && path.endsWith(`/${filename}`)) {
-      const depth = path.split("/").length;
-      if (depth <= 2) return entry;
+      if (path.split("/").length <= 2) return entry;
     }
   }
 
