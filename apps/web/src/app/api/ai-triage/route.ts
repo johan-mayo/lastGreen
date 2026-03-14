@@ -2,6 +2,36 @@ import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import type { ComparisonSummary, AiTriageResult } from "@last-green/core";
 
+/** Extract AiTriageResult JSON from model output, handling markdown fences and surrounding text */
+function extractTriageResult(text: string): AiTriageResult {
+  const fallback: AiTriageResult = {
+    category: "unknown",
+    confidence: "low",
+    diagnosis: text,
+    primaryEvidence: [],
+    counterEvidence: [],
+    suggestedNextStep: "Review the test failure details manually.",
+  };
+
+  // Strategy 1: extract JSON from inside markdown fences
+  const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
+  if (fenceMatch) {
+    try { return JSON.parse(fenceMatch[1]); } catch { /* try next */ }
+  }
+
+  // Strategy 2: find first { to last } and parse
+  const firstBrace = text.indexOf("{");
+  const lastBrace = text.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    try { return JSON.parse(text.slice(firstBrace, lastBrace + 1)); } catch { /* try next */ }
+  }
+
+  // Strategy 3: try raw text
+  try { return JSON.parse(text); } catch { /* fallback */ }
+
+  return fallback;
+}
+
 const SYSTEM_PROMPT = `You are doing evidence-based triage for a failing Playwright e2e test. These tests cover UI, API, and SDK surfaces. A failure may be a genuine bug, or it may be caused by an intentional change to a service that the test hasn't been updated to reflect yet.
 
 Rules:
@@ -152,20 +182,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Initial: parse structured response
-    let result: AiTriageResult;
-    try {
-      const cleaned = text.replace(/^```(?:json)?\s*/m, "").replace(/\s*```$/m, "");
-      result = JSON.parse(cleaned);
-    } catch {
-      result = {
-        category: "unknown",
-        confidence: "low",
-        diagnosis: text,
-        primaryEvidence: [],
-        counterEvidence: [],
-        suggestedNextStep: "Review the test failure details manually.",
-      };
-    }
+    const result = extractTriageResult(text);
 
     return NextResponse.json({ result, rawResponse: text });
   } catch (e) {
