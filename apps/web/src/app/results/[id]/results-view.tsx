@@ -446,6 +446,25 @@ function DetailPanel({
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
 
+  // Conversation state per attempt — stored in sessionStorage
+  type ConvoMessage = { role: "user" | "assistant"; content: string };
+  const storageKey = `lg-convo-${sessionId}-${testCase.id}`;
+
+  const [conversations, setConversations] = useState<Record<number, ConvoMessage[]>>(() => {
+    if (typeof window === "undefined") return {};
+    try {
+      const stored = sessionStorage.getItem(storageKey);
+      return stored ? JSON.parse(stored) : {};
+    } catch { return {}; }
+  });
+  const [followUpInput, setFollowUpInput] = useState("");
+
+  // Persist conversations to sessionStorage
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    sessionStorage.setItem(storageKey, JSON.stringify(conversations));
+  }, [conversations, storageKey]);
+
   // Failing network requests for current attempt
   const failingRequests = useMemo(() => {
     const key = `${testCase.id}:${currentAttempt?.attempt ?? 0}`;
@@ -492,6 +511,14 @@ function DetailPanel({
     };
   }, [attemptSummary, compare]);
 
+  // Pre-compute comparison summary for AI calls
+  const comparisonSummary = useMemo(() => {
+    const allFailRequests = networkRequestsMap[`${testCase.id}:${currentAttempt?.attempt ?? 0}`] ?? [];
+    return buildComparisonSummary(
+      testCase, currentAttempt, compare, allFailRequests, passingRequests, attemptSummary,
+    );
+  }, [testCase, currentAttempt, compare, passingRequests, attemptSummary, networkRequestsMap]);
+
   const requestAiTriage = useCallback(async () => {
     if (!apiKey.trim()) {
       setShowKeyInput(true);
@@ -503,32 +530,63 @@ function DetailPanel({
 
     const idx = attemptIdx;
     try {
-      // Build deterministic comparison summary — all filtering happens here, not in the LLM
-      const allFailRequests = networkRequestsMap[`${testCase.id}:${currentAttempt?.attempt ?? 0}`] ?? [];
-      const comparison = buildComparisonSummary(
-        testCase,
-        currentAttempt,
-        compare,
-        allFailRequests,
-        passingRequests,
-        attemptSummary,
-      );
-
       const res = await fetch("/api/ai-triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey, comparison }),
+        body: JSON.stringify({ apiKey, comparison: comparisonSummary }),
       });
 
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Request failed");
       setAiResults((prev) => ({ ...prev, [idx]: data.result }));
+      // Start conversation with the raw AI response
+      setConversations((prev) => ({
+        ...prev,
+        [idx]: [{ role: "assistant" as const, content: data.rawResponse }],
+      }));
     } catch (e) {
       setAiError(e instanceof Error ? e.message : "AI triage failed");
     } finally {
       setAiLoading(false);
     }
-  }, [apiKey, attemptIdx, testCase, currentAttempt, compare, passingRequests, attemptSummary, networkRequestsMap]);
+  }, [apiKey, attemptIdx, comparisonSummary]);
+
+  const sendFollowUp = useCallback(async () => {
+    const text = followUpInput.trim();
+    if (!text || !apiKey.trim()) return;
+
+    const idx = attemptIdx;
+    const history = conversations[idx] ?? [];
+    const updatedHistory = [...history, { role: "user" as const, content: text }];
+
+    setConversations((prev) => ({ ...prev, [idx]: updatedHistory }));
+    setFollowUpInput("");
+    setAiLoading(true);
+    setAiError(null);
+
+    try {
+      const res = await fetch("/api/ai-triage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiKey,
+          comparison: comparisonSummary,
+          conversationHistory: updatedHistory,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Request failed");
+      setConversations((prev) => ({
+        ...prev,
+        [idx]: [...updatedHistory, { role: "assistant" as const, content: data.reply }],
+      }));
+    } catch (e) {
+      setAiError(e instanceof Error ? e.message : "Follow-up failed");
+    } finally {
+      setAiLoading(false);
+    }
+  }, [apiKey, attemptIdx, followUpInput, conversations, comparisonSummary]);
 
   return (
     <div className="flex flex-col gap-6">
@@ -629,7 +687,7 @@ function DetailPanel({
               disabled={aiLoading}
               className="rounded-md bg-violet-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {aiLoading
+              {aiLoading && !aiResults[attemptIdx]
                 ? "Analyzing..."
                 : aiResults[attemptIdx]
                   ? "Re-analyze"
@@ -653,6 +711,59 @@ function DetailPanel({
         )}
         {aiResults[attemptIdx] && (
           <AiTriageResultCard result={aiResults[attemptIdx]} />
+        )}
+
+        {/* Conversation thread */}
+        {conversations[attemptIdx] && conversations[attemptIdx].length > 1 && (
+          <div className="mt-4 flex flex-col gap-3">
+            {conversations[attemptIdx].slice(1).map((msg, i) => (
+              <div
+                key={i}
+                className={`rounded-md px-4 py-3 text-sm ${
+                  msg.role === "user"
+                    ? "bg-zinc-800 text-zinc-200 ml-8"
+                    : "bg-violet-950/20 border border-violet-800/30 text-zinc-300 mr-8"
+                }`}
+              >
+                <span className="text-xs font-medium uppercase tracking-wider text-zinc-500 block mb-1">
+                  {msg.role === "user" ? "You" : "AI"}
+                </span>
+                <p className="leading-relaxed whitespace-pre-wrap">{msg.content}</p>
+              </div>
+            ))}
+            {aiLoading && (
+              <div className="bg-violet-950/20 border border-violet-800/30 rounded-md px-4 py-3 text-sm text-zinc-500 mr-8">
+                Thinking...
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Follow-up input — only show after initial diagnosis */}
+        {aiResults[attemptIdx] && (
+          <div className="mt-3 flex gap-2">
+            <input
+              type="text"
+              placeholder="Ask a follow-up question..."
+              value={followUpInput}
+              onChange={(e) => setFollowUpInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey && followUpInput.trim()) {
+                  e.preventDefault();
+                  sendFollowUp();
+                }
+              }}
+              disabled={aiLoading}
+              className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 focus:border-violet-500 focus:outline-none disabled:opacity-50"
+            />
+            <button
+              onClick={sendFollowUp}
+              disabled={aiLoading || !followUpInput.trim()}
+              className="rounded-md bg-violet-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+            >
+              Send
+            </button>
+          </div>
         )}
       </section>
 
