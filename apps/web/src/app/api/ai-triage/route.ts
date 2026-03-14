@@ -22,6 +22,12 @@ export async function POST(req: NextRequest) {
         evidence: { type: string; description: string }[];
         suggestedNextStep: string;
         attemptStatus: string;
+        passingRun: {
+          status: string;
+          duration: number;
+          stepsAroundDivergence: { index: number; title: string; duration: number; error: string | null }[];
+          totalSteps: number;
+        } | null;
       };
     };
 
@@ -59,6 +65,18 @@ export async function POST(req: NextRequest) {
         `  Passing step: ${d.passingStepTitle ?? "—"}`,
         `  Type: ${d.type}`
       );
+    }
+    if (context.passingRun) {
+      const pr = context.passingRun;
+      parts.push(
+        `\nPassing run: status=${pr.status}, duration=${pr.duration}ms, ${pr.totalSteps} total steps`,
+        `Passing steps around divergence point:`,
+        ...pr.stepsAroundDivergence.map(
+          (s) => `  [${s.index}] "${s.title}" ${s.duration}ms${s.error ? ` ERROR: ${s.error}` : ""}`
+        )
+      );
+    } else {
+      parts.push(`\nNo passing run provided (single-report mode).`);
     }
     if (context.evidence.length > 0) {
       parts.push(

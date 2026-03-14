@@ -301,6 +301,26 @@ function DetailPanel({
             })),
             suggestedNextStep: attemptSummary.suggestedNextStep,
             attemptStatus: currentAttempt?.status ?? "unknown",
+            passingRun: (() => {
+              const passResult = compare.match.passingTest?.results.find(
+                (r) => r.status === "passed"
+              ) ?? compare.match.passingTest?.results[compare.match.passingTest.results.length - 1];
+              if (!passResult) return null;
+              const divIdx = attemptDivergence?.stepIndex ?? 0;
+              const start = Math.max(0, divIdx - 2);
+              const end = Math.min(passResult.steps.length, divIdx + 3);
+              return {
+                status: passResult.status,
+                duration: passResult.duration,
+                stepsAroundDivergence: passResult.steps.slice(start, end).map((s, i) => ({
+                  index: start + i,
+                  title: s.title,
+                  duration: s.duration,
+                  error: s.error?.message ?? null,
+                })),
+                totalSteps: passResult.steps.length,
+              };
+            })(),
           },
         }),
       });
