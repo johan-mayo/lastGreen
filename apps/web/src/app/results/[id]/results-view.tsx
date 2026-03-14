@@ -66,6 +66,63 @@ function findFailingStepInChildren(steps: NormalizedStep[]): NormalizedStep | nu
   return null;
 }
 
+const NETWORK_STEP_PATTERNS = [
+  /^apiRequestContext\./i,
+  /^page\.goto/i,
+  /^page\.request\./i,
+  /^request\./i,
+  /^page\.route/i,
+  /^browserContext\.route/i,
+];
+
+/** Extract failing network/API steps from an attempt (flat + recursive) */
+function getFailingNetworkSteps(
+  steps: NormalizedStep[]
+): { title: string; duration: number; error: string }[] {
+  const results: { title: string; duration: number; error: string }[] = [];
+
+  function walk(stepList: NormalizedStep[]) {
+    for (const step of stepList) {
+      if (step.error) {
+        const isNetwork =
+          NETWORK_STEP_PATTERNS.some((p) => p.test(step.title)) ||
+          step.category === "pw:api" && (
+            step.title.toLowerCase().includes("request") ||
+            step.title.toLowerCase().includes("goto") ||
+            step.title.toLowerCase().includes("fetch") ||
+            step.title.toLowerCase().includes("route")
+          );
+        const errorLower = step.error.message?.toLowerCase() ?? "";
+        const isNetworkError =
+          errorLower.includes("econnrefused") ||
+          errorLower.includes("enotfound") ||
+          errorLower.includes("net::err") ||
+          errorLower.includes("econnreset") ||
+          errorLower.includes("fetch") ||
+          errorLower.includes("404") ||
+          errorLower.includes("500") ||
+          errorLower.includes("502") ||
+          errorLower.includes("503") ||
+          errorLower.includes("api") ||
+          errorLower.includes("network");
+
+        if (isNetwork || isNetworkError) {
+          const cleanMsg = (step.error.message ?? "unknown error").replace(/\[\d+m/g, "").split("\n")[0];
+          results.push({
+            title: step.title,
+            duration: step.duration,
+            error: cleanMsg,
+          });
+        }
+      }
+      if (step.children?.length) walk(step.children);
+    }
+  }
+
+  walk(steps);
+  return results;
+}
+
 /** Build a per-attempt summary from an attempt's error and steps */
 function getAttemptSummary(attempt: NormalizedTestResult | undefined): {
   failingStep: { step: NormalizedStep; index: number } | null;
@@ -236,6 +293,12 @@ function DetailPanel({
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
 
+  // Failing network requests for current attempt
+  const failingRequests = useMemo(
+    () => getFailingNetworkSteps(currentAttempt?.steps ?? []),
+    [currentAttempt]
+  );
+
   // Compute per-attempt analysis
   const attemptSummary = useMemo(
     () => getAttemptSummary(currentAttempt),
@@ -321,6 +384,7 @@ function DetailPanel({
                 totalSteps: passResult.steps.length,
               };
             })(),
+            failingRequests,
           },
         }),
       });
@@ -333,7 +397,7 @@ function DetailPanel({
     } finally {
       setAiLoading(false);
     }
-  }, [apiKey, attemptIdx, testCase, triage, attemptSummary, attemptDivergence, currentAttempt]);
+  }, [apiKey, attemptIdx, testCase, triage, attemptSummary, attemptDivergence, currentAttempt, failingRequests]);
 
   return (
     <div className="flex flex-col gap-6">
@@ -384,6 +448,26 @@ function DetailPanel({
             Error{attempts.length > 1 ? ` — attempt ${attemptIdx + 1}` : ""}
           </h4>
           <ErrorBlock message={currentAttempt.error.message ?? ""} stack={currentAttempt.error.stack} />
+        </section>
+      )}
+
+      {/* Failing network requests for this attempt */}
+      {failingRequests.length > 0 && (
+        <section className="rounded-lg border border-orange-800/30 bg-orange-950/10 p-6">
+          <h4 className="text-sm font-semibold uppercase tracking-wider text-orange-400">
+            Failing network requests{attempts.length > 1 ? ` — attempt ${attemptIdx + 1}` : ""} ({failingRequests.length})
+          </h4>
+          <div className="mt-3 flex flex-col gap-2">
+            {failingRequests.map((r, i) => (
+              <div key={i} className="rounded-md bg-zinc-900 px-4 py-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-sm text-zinc-200">{r.title}</span>
+                  <span className="text-xs text-zinc-500">{r.duration}ms</span>
+                </div>
+                <div className="mt-1 text-sm text-orange-300/80">{r.error}</div>
+              </div>
+            ))}
+          </div>
         </section>
       )}
 
