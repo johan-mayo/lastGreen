@@ -23,6 +23,40 @@ export interface ErrorComparison {
 
 const TIMING_SPIKE_FACTOR = 3;
 
+// Patterns to normalize in step titles before comparison
+// UUIDs, hex hashes, timestamps, numeric IDs
+const DYNAMIC_PATTERNS = [
+  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, // UUID
+  /[0-9a-f]{16,}/gi,  // long hex strings
+  /\b\d{10,}\b/g,     // timestamps / long numeric IDs
+];
+
+/** Normalize a step title for comparison by stripping dynamic values */
+function normalizeStepTitle(title: string): string {
+  let normalized = title;
+  for (const pattern of DYNAMIC_PATTERNS) {
+    normalized = normalized.replace(pattern, "<dynamic>");
+  }
+  return normalized;
+}
+
+/** Compare two step titles, ignoring dynamic values like UUIDs */
+function stepTitlesMatch(a: string, b: string): boolean {
+  if (a === b) return true;
+  return normalizeStepTitle(a) === normalizeStepTitle(b);
+}
+
+const LIFECYCLE_STEPS = new Set([
+  "Before Hooks",
+  "After Hooks",
+  "Worker Cleanup",
+  "Worker Setup",
+  "beforeAll hook",
+  "afterAll hook",
+  "beforeEach hook",
+  "afterEach hook",
+]);
+
 /**
  * Compare a failing test to its matched passing test.
  * Identifies step diffs and the first meaningful divergence.
@@ -34,15 +68,21 @@ export function compareTestPair(match: TestMatch): CompareResult {
   const failResult = getLastResult(failingTest);
   const passResult = passingTest ? getLastPassingResult(passingTest) : null;
 
-  const stepDiffs = diffSteps(
-    failResult?.steps ?? [],
-    passResult?.steps ?? []
-  );
+  let stepDiffs: StepDiff[];
+  let firstDivergence: Divergence | null;
 
-  const firstDivergence = findFirstDivergence(
-    failResult?.steps ?? [],
-    passResult?.steps ?? []
-  );
+  if (passResult) {
+    // Two-run comparison: diff steps between passing and failing
+    stepDiffs = diffSteps(failResult?.steps ?? [], passResult.steps);
+    firstDivergence = findFirstDivergence(
+      failResult?.steps ?? [],
+      passResult.steps
+    );
+  } else {
+    // Single-run: find the first step that actually failed
+    stepDiffs = [];
+    firstDivergence = findFailingStep(failResult?.steps ?? []);
+  }
 
   const timingDelta =
     failResult && passResult
@@ -95,7 +135,7 @@ function diffSteps(
         description: `Step "${fail.title}" present in failing run but not in passing run`,
       });
     } else if (fail && pass) {
-      if (fail.title !== pass.title) {
+      if (!stepTitlesMatch(fail.title, pass.title)) {
         diffs.push({
           failingStep: fail,
           passingStep: pass,
@@ -126,15 +166,51 @@ function diffSteps(
   return diffs;
 }
 
+/**
+ * Single-run mode: find the first step that actually errored.
+ * Skips Playwright lifecycle steps (Before/After Hooks, Worker Cleanup).
+ */
+function findFailingStep(steps: NormalizedStep[]): Divergence | null {
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+
+    if (step.error && !LIFECYCLE_STEPS.has(step.title)) {
+      return {
+        stepIndex: i,
+        failingStep: step,
+        passingStep: null,
+        type: "error_introduced",
+        description: `Step "${step.title}" failed: ${step.error.message?.slice(0, 150) ?? "unknown error"}`,
+        significance: "high",
+      };
+    }
+
+    // Recurse into children
+    if (step.children.length > 0) {
+      const child = findFailingStep(step.children);
+      if (child) return child;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Two-run mode: find first meaningful divergence between passing and failing steps.
+ * Skips lifecycle steps that are just Playwright infrastructure noise.
+ */
 function findFirstDivergence(
   failSteps: NormalizedStep[],
   passSteps: NormalizedStep[]
 ): Divergence | null {
-  const maxLen = Math.max(failSteps.length, passSteps.length);
+  // Filter out lifecycle steps for comparison purposes
+  const filteredFail = failSteps.filter((s) => !LIFECYCLE_STEPS.has(s.title));
+  const filteredPass = passSteps.filter((s) => !LIFECYCLE_STEPS.has(s.title));
+  const maxLen = Math.max(filteredFail.length, filteredPass.length);
 
   for (let i = 0; i < maxLen; i++) {
-    const fail = failSteps[i];
-    const pass = passSteps[i];
+    const fail = filteredFail[i];
+    const pass = filteredPass[i];
 
     // Step exists in fail but not pass
     if (fail && !pass) {
@@ -162,7 +238,7 @@ function findFirstDivergence(
 
     if (fail && pass) {
       // Step name changed = likely different flow path
-      if (fail.title !== pass.title) {
+      if (!stepTitlesMatch(fail.title, pass.title)) {
         return {
           stepIndex: i,
           failingStep: fail,

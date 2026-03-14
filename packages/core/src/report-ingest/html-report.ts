@@ -398,19 +398,39 @@ function convertStep(step: HtmlReportStep): PlaywrightStep {
     category: "pw:api",
     startTime: step.startTime,
     duration: step.duration,
-    error: step.error ? convertError(step.error) : undefined,
+    error: step.error ? normalizeError(step.error) : undefined,
     steps: step.steps?.map(convertStep),
   };
 }
 
+/**
+ * Normalize an error that can be a string, an object with `message`, or other shapes.
+ * Playwright HTML reports store step errors as raw strings.
+ */
+function normalizeError(error: unknown): PlaywrightError {
+  if (typeof error === "string") {
+    // Extract first line as the summary message
+    const firstLine = error.split("\n")[0].replace(/\[2m/g, "").replace(/\[22m/g, "").trim();
+    return {
+      message: firstLine,
+      stack: error,
+    };
+  }
+  if (typeof error === "object" && error !== null) {
+    const e = error as Record<string, unknown>;
+    return {
+      message: (e.message as string) ?? String(error),
+      stack: e.stack as string | undefined,
+      value: e.value as string | undefined,
+      snippet: e.snippet as string | undefined,
+      location: e.location as PlaywrightError["location"],
+    };
+  }
+  return { message: String(error) };
+}
+
 function convertError(error: HtmlReportError): PlaywrightError {
-  return {
-    message: error.message,
-    stack: error.stack,
-    value: error.value,
-    snippet: error.snippet,
-    location: error.location,
-  };
+  return normalizeError(error);
 }
 
 function convertAttachment(att: HtmlReportAttachment): PlaywrightAttachment {
