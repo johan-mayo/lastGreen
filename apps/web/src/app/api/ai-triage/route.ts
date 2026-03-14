@@ -73,7 +73,7 @@ export async function POST(req: NextRequest) {
       messages: [
         {
           role: "user",
-          content: `You are a Playwright test failure expert. A single attempt of a CI test failed. The data below is for this one attempt only — diagnose this specific failure compared to the passing run (if provided). Do not mix in information from other retry attempts.\n\n${parts.join("\n")}\n\nGive a brief, actionable diagnosis: what likely caused this specific attempt's failure and what the engineer should do to fix it. Be specific to the error and step shown. 3-5 sentences max.`,
+          content: `You are a Playwright test failure expert. These are e2e tests that cover UI, API, and SDK surfaces. A failure may be a genuine bug, but it can also be caused by an intentional change to a service (updated API response, redesigned UI element, new SDK behavior) that the test hasn't been updated to reflect yet. Keep both possibilities in mind when diagnosing.\n\nA single attempt of a CI test failed. The data below is for this one attempt only — diagnose this specific failure compared to the passing run (if provided). Do not mix in information from other retry attempts.\n\n${parts.join("\n")}\n\nGive a brief, actionable diagnosis: what likely caused this specific attempt's failure and what the engineer should do to fix it. Be specific to the error and step shown. 3-5 sentences max.`,
         },
       ],
     });
