@@ -1,0 +1,169 @@
+{
+  "config": {
+    "configFile": "playwright.config.ts",
+    "rootDir": "/app",
+    "metadata": {
+      "commitSha": "a1b2c3d4e5f6",
+      "branch": "feature/checkout-redesign"
+    },
+    "projects": [
+      { "id": "chromium", "name": "chromium" }
+    ]
+  },
+  "suites": [
+    {
+      "title": "checkout.spec.ts",
+      "file": "tests/checkout.spec.ts",
+      "line": 1,
+      "column": 1,
+      "specs": [
+        {
+          "title": "user can complete checkout",
+          "ok": false,
+          "tags": ["@checkout"],
+          "id": "test-1",
+          "file": "tests/checkout.spec.ts",
+          "line": 5,
+          "column": 3,
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "chromium",
+              "projectName": "chromium",
+              "status": "unexpected",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "status": "failed",
+                  "duration": 12450,
+                  "retry": 0,
+                  "startTime": "2026-03-12T10:00:00.000Z",
+                  "errors": [
+                    {
+                      "message": "expect(locator).toBeVisible()\n\nLocator: getByTestId('order-confirmation')\nExpected: visible\nReceived: <element not found>",
+                      "stack": "Error: expect(locator).toBeVisible()\n    at tests/checkout.spec.ts:42:35"
+                    }
+                  ],
+                  "stdout": [],
+                  "stderr": ["Error: Failed to fetch /api/orders - 500 Internal Server Error"],
+                  "attachments": [
+                    {
+                      "name": "screenshot-on-failure.png",
+                      "contentType": "image/png",
+                      "path": "test-results/checkout-chromium/screenshot-on-failure.png"
+                    }
+                  ],
+                  "steps": [
+                    {
+                      "title": "page.goto('http://localhost:3000/cart')",
+                      "category": "pw:api",
+                      "startTime": "2026-03-12T10:00:00.000Z",
+                      "duration": 1200
+                    },
+                    {
+                      "title": "locator.click(getByRole('button', { name: 'Checkout' }))",
+                      "category": "pw:api",
+                      "startTime": "2026-03-12T10:00:01.200Z",
+                      "duration": 350
+                    },
+                    {
+                      "title": "locator.fill(getByLabel('Email'))",
+                      "category": "pw:api",
+                      "startTime": "2026-03-12T10:00:01.550Z",
+                      "duration": 200
+                    },
+                    {
+                      "title": "locator.fill(getByLabel('Card number'))",
+                      "category": "pw:api",
+                      "startTime": "2026-03-12T10:00:01.750Z",
+                      "duration": 180
+                    },
+                    {
+                      "title": "locator.click(getByRole('button', { name: 'Place Order' }))",
+                      "category": "pw:api",
+                      "startTime": "2026-03-12T10:00:01.930Z",
+                      "duration": 5200
+                    },
+                    {
+                      "title": "expect(locator).toBeVisible(getByTestId('order-confirmation'))",
+                      "category": "expect",
+                      "startTime": "2026-03-12T10:00:07.130Z",
+                      "duration": 5000,
+                      "error": {
+                        "message": "expect(locator).toBeVisible()\n\nLocator: getByTestId('order-confirmation')\nExpected: visible\nReceived: <element not found>"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "title": "user can add item to cart",
+          "ok": true,
+          "tags": ["@cart"],
+          "id": "test-2",
+          "file": "tests/checkout.spec.ts",
+          "line": 50,
+          "column": 3,
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "chromium",
+              "projectName": "chromium",
+              "status": "expected",
+              "results": [
+                {
+                  "workerIndex": 1,
+                  "status": "passed",
+                  "duration": 3200,
+                  "retry": 0,
+                  "startTime": "2026-03-12T10:00:00.000Z",
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "attachments": [],
+                  "steps": [
+                    {
+                      "title": "page.goto('http://localhost:3000/products')",
+                      "category": "pw:api",
+                      "startTime": "2026-03-12T10:00:00.000Z",
+                      "duration": 900
+                    },
+                    {
+                      "title": "locator.click(getByTestId('add-to-cart-btn'))",
+                      "category": "pw:api",
+                      "startTime": "2026-03-12T10:00:00.900Z",
+                      "duration": 400
+                    },
+                    {
+                      "title": "expect(locator).toHaveText('1 item')",
+                      "category": "expect",
+                      "startTime": "2026-03-12T10:00:01.300Z",
+                      "duration": 150
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "suites": []
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-03-12T10:00:00.000Z",
+    "duration": 15650,
+    "expected": 1,
+    "unexpected": 1,
+    "flaky": 0,
+    "skipped": 0
+  }
+}

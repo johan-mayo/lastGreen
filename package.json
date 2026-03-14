@@ -1,0 +1,19 @@
+{
+  "name": "last-green",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=apps/web",
+    "dev:core": "npm run dev --workspace=packages/core",
+    "build": "npm run build --workspace=packages/core && npm run build --workspace=apps/web",
+    "build:core": "npm run build --workspace=packages/core",
+    "build:web": "npm run build --workspace=apps/web",
+    "lint": "npm run lint --workspaces"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

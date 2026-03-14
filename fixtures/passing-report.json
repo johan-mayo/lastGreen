@@ -1,0 +1,155 @@
+{
+  "config": {
+    "configFile": "playwright.config.ts",
+    "rootDir": "/app",
+    "metadata": {
+      "commitSha": "f6e5d4c3b2a1",
+      "branch": "main"
+    },
+    "projects": [
+      { "id": "chromium", "name": "chromium" }
+    ]
+  },
+  "suites": [
+    {
+      "title": "checkout.spec.ts",
+      "file": "tests/checkout.spec.ts",
+      "line": 1,
+      "column": 1,
+      "specs": [
+        {
+          "title": "user can complete checkout",
+          "ok": true,
+          "tags": ["@checkout"],
+          "id": "test-1",
+          "file": "tests/checkout.spec.ts",
+          "line": 5,
+          "column": 3,
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "chromium",
+              "projectName": "chromium",
+              "status": "expected",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "status": "passed",
+                  "duration": 4500,
+                  "retry": 0,
+                  "startTime": "2026-03-11T09:00:00.000Z",
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "attachments": [],
+                  "steps": [
+                    {
+                      "title": "page.goto('http://localhost:3000/cart')",
+                      "category": "pw:api",
+                      "startTime": "2026-03-11T09:00:00.000Z",
+                      "duration": 1100
+                    },
+                    {
+                      "title": "locator.click(getByRole('button', { name: 'Checkout' }))",
+                      "category": "pw:api",
+                      "startTime": "2026-03-11T09:00:01.100Z",
+                      "duration": 300
+                    },
+                    {
+                      "title": "locator.fill(getByLabel('Email'))",
+                      "category": "pw:api",
+                      "startTime": "2026-03-11T09:00:01.400Z",
+                      "duration": 180
+                    },
+                    {
+                      "title": "locator.fill(getByLabel('Card number'))",
+                      "category": "pw:api",
+                      "startTime": "2026-03-11T09:00:01.580Z",
+                      "duration": 170
+                    },
+                    {
+                      "title": "locator.click(getByRole('button', { name: 'Place Order' }))",
+                      "category": "pw:api",
+                      "startTime": "2026-03-11T09:00:01.750Z",
+                      "duration": 1800
+                    },
+                    {
+                      "title": "expect(locator).toBeVisible(getByTestId('order-confirmation'))",
+                      "category": "expect",
+                      "startTime": "2026-03-11T09:00:03.550Z",
+                      "duration": 200
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "title": "user can add item to cart",
+          "ok": true,
+          "tags": ["@cart"],
+          "id": "test-2",
+          "file": "tests/checkout.spec.ts",
+          "line": 50,
+          "column": 3,
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "chromium",
+              "projectName": "chromium",
+              "status": "expected",
+              "results": [
+                {
+                  "workerIndex": 1,
+                  "status": "passed",
+                  "duration": 3000,
+                  "retry": 0,
+                  "startTime": "2026-03-11T09:00:00.000Z",
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "attachments": [],
+                  "steps": [
+                    {
+                      "title": "page.goto('http://localhost:3000/products')",
+                      "category": "pw:api",
+                      "startTime": "2026-03-11T09:00:00.000Z",
+                      "duration": 850
+                    },
+                    {
+                      "title": "locator.click(getByTestId('add-to-cart-btn'))",
+                      "category": "pw:api",
+                      "startTime": "2026-03-11T09:00:00.850Z",
+                      "duration": 380
+                    },
+                    {
+                      "title": "expect(locator).toHaveText('1 item')",
+                      "category": "expect",
+                      "startTime": "2026-03-11T09:00:01.230Z",
+                      "duration": 120
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "suites": []
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-03-11T09:00:00.000Z",
+    "duration": 7500,
+    "expected": 2,
+    "unexpected": 0,
+    "flaky": 0,
+    "skipped": 0
+  }
+}
