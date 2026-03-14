@@ -1,5 +1,5 @@
 export * from "./types/index.js";
-export { ingestReport, ingestReportFromJson } from "./report-ingest/index.js";
+export { ingestReport, ingestReportFromJson, ingestReportAuto, ingestHtmlReport, ingestZipReport } from "./report-ingest/index.js";
 export type { IngestResult } from "./report-ingest/index.js";
 export { normalizeReport } from "./report-normalizer/index.js";
 export { matchTests } from "./test-matcher/index.js";

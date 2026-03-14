@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  ingestReportFromJson,
+  ingestReportAuto,
   normalizeReport,
   matchTests,
   compareTestPair,
@@ -39,17 +39,17 @@ export async function POST(req: NextRequest) {
     const sessionDir = join(UPLOAD_DIR, id);
     await mkdir(sessionDir, { recursive: true });
 
-    // Read and ingest failing report
-    const failingJson = await failingFile.text();
-    const failingIngest = await ingestReportFromJson(failingJson, sessionDir);
+    // Read and ingest failing report (supports .json, .html, .zip)
+    const failingBuffer = Buffer.from(await failingFile.arrayBuffer());
+    const failingIngest = await ingestReportAuto(failingBuffer, failingFile.name, sessionDir);
     const failingRun = normalizeReport(failingIngest);
 
     // Optionally read and ingest passing report
     let passingRun: NormalizedRun | null = null;
     const passingFile = formData.get("passing") as File | null;
     if (passingFile) {
-      const passingJson = await passingFile.text();
-      const passingIngest = await ingestReportFromJson(passingJson, sessionDir);
+      const passingBuffer = Buffer.from(await passingFile.arrayBuffer());
+      const passingIngest = await ingestReportAuto(passingBuffer, passingFile.name, sessionDir);
       passingRun = normalizeReport(passingIngest);
     }
 

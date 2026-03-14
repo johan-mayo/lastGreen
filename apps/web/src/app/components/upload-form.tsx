@@ -45,7 +45,7 @@ export function UploadForm() {
     <div className="flex w-full max-w-2xl flex-col gap-6">
       <DropZone
         label="Failing report"
-        sublabel="Required — Playwright JSON report file"
+        sublabel="Required — JSON, HTML report, or zipped playwright-report/"
         file={failingFile}
         onFile={setFailingFile}
         required
@@ -137,7 +137,7 @@ function DropZone({
 
       <input
         type="file"
-        accept=".json"
+        accept=".json,.html,.htm,.zip"
         onChange={handleChange}
         className="hidden"
       />
