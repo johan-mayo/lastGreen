@@ -251,7 +251,7 @@ function StepComparison({ compare }: { compare: CompareResult }) {
                   <td className="px-2 py-1.5 font-mono text-zinc-600">{i}</td>
                   <td className="px-2 py-1.5 font-mono text-zinc-300">
                     {fs?.title ?? "—"}
-                    {fs?.error && (
+                    {fs?.error?.message && (
                       <span className="ml-2 text-red-400">
                         {fs.error.message.slice(0, 60)}
                       </span>
