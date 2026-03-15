@@ -14,7 +14,7 @@ As the codebase grew and more people contributed, I lost the ability to instantl
 
 One of the codebases I work in keeps Playwright reports from multiple runs every day. So when a test failed, I’d usually open the failing report, open a passing one in another tab, and start comparing them step by step until I found the point where things diverged. That worked, but it was tedious and slow. It was pretty normal to burn 10 to 15 minutes on a single failure just figuring out what was actually different.
 
-After doing that enough times, the pattern became obvious: most failures are not unique snowflakes. Usually it’s one of a few things.
+After doing that enough times, the pattern became obvious: most failures are not unique snowflakes. Usually it’s just one of a few things.
 
 - The app changed and the test expectations are now wrong
 - A service drifted or went down
