@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useMemo } from "react";
 import type {
   NormalizedTestCase,
   NetworkRequest,
@@ -13,7 +13,6 @@ import {
   Stack,
   Table,
   Text,
-  Button,
   Card,
   Image,
   SimpleGrid,
@@ -38,32 +37,37 @@ export function PassingPanel({
     );
   }
 
-  const [attemptIdx, setAttemptIdx] = useState(() => {
-    const idx = passingTest.results.findIndex((r) => r.status === "passed");
-    return idx >= 0 ? idx : passingTest.results.length - 1;
-  });
-  const currentAttempt = passingTest.results[attemptIdx];
+  const passingAttempt = passingTest.results.find((r) => r.status === "passed");
+
+  if (!passingAttempt) {
+    return (
+      <Paper p="lg" radius="md" bg="dark.6">
+        <Text c="dimmed">
+          No passing attempt found for the compared test. All {passingTest.results.length} attempt{passingTest.results.length !== 1 ? "s" : ""} failed.
+        </Text>
+      </Paper>
+    );
+  }
 
   const networkRequests = useMemo(() => {
-    if (!currentAttempt) return [];
-    const key = `${passingTest.id}:${currentAttempt.attempt}`;
+    const key = `${passingTest.id}:${passingAttempt.attempt}`;
     return passingNetworkRequests[key] ?? [];
-  }, [passingTest.id, currentAttempt, passingNetworkRequests]);
+  }, [passingTest.id, passingAttempt, passingNetworkRequests]);
 
   const failingRequests = useMemo(
     () => networkRequests.filter((r) => r.failed),
     [networkRequests]
   );
 
-  const steps = currentAttempt?.steps ?? [];
-  const artifacts = currentAttempt?.artifacts ?? [];
+  const steps = passingAttempt.steps ?? [];
+  const artifacts = passingAttempt.artifacts ?? [];
   const screenshots = artifacts.filter(
     (a) => a.type === "screenshot" && a.contentType.startsWith("image/")
   );
   const videos = artifacts.filter(
     (a) => a.type === "video" && a.contentType.startsWith("video/")
   );
-  const stderr = currentAttempt?.stderr ?? [];
+  const stderr = passingAttempt.stderr ?? [];
 
   return (
     <Stack gap="md">
@@ -72,40 +76,12 @@ export function PassingPanel({
         <Group gap="sm" mb="xs">
           <Badge color="green" variant="light">passed</Badge>
           <Text size="xs" c="dimmed">
-            {currentAttempt?.duration ? `${Math.round(currentAttempt.duration / 1000)}s` : ""}
+            {passingAttempt.duration ? `${Math.round(passingAttempt.duration / 1000)}s` : ""}
           </Text>
         </Group>
         <Title order={4}>{passingTest.fullTitle}</Title>
         <Text size="xs" c="dimmed" mt={4}>{passingTest.filePath}</Text>
       </Paper>
-
-      {/* Attempt toggle */}
-      {passingTest.results.length > 1 && (
-        <Paper p="md" radius="md" bg="dark.6">
-          <Group gap="sm">
-            <Text size="sm" fw={500} c="dimmed">Attempt:</Text>
-            <Group gap={4}>
-              {passingTest.results.map((attempt, i) => (
-                <Button
-                  key={i}
-                  onClick={() => setAttemptIdx(i)}
-                  size="xs"
-                  variant={i === attemptIdx ? "filled" : "subtle"}
-                  color={i === attemptIdx
-                    ? (attempt.status === "passed" ? "green" : "red")
-                    : "gray"
-                  }
-                >
-                  {i + 1}{" "}
-                  <Text span size="xs" ml={4}>
-                    {attempt.status === "passed" ? "pass" : "fail"}
-                  </Text>
-                </Button>
-              ))}
-            </Group>
-          </Group>
-        </Paper>
-      )}
 
       {/* Steps */}
       {steps.length > 0 && (
