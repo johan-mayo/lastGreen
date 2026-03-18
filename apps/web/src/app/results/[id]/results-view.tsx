@@ -36,8 +36,10 @@ import {
   Text,
   TextInput,
   Title,
+  Tooltip,
   UnstyledButton,
 } from "@mantine/core";
+import { PassingPanel } from "./passing-panel";
 
 /** Try to parse a string as AiTriageResult JSON (handles markdown fences) */
 function tryParseTriageResult(text: string): AiTriageResult | null {
@@ -343,6 +345,7 @@ export function ResultsView({ id }: { id: string }) {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedIdx, setSelectedIdx] = useState<number>(0);
+  const [splitMode, setSplitMode] = useState(false);
 
   useEffect(() => {
     fetch(`/api/results/${id}`)
@@ -369,56 +372,133 @@ export function ResultsView({ id }: { id: string }) {
     <Stack gap="lg">
       {/* Run metadata */}
       <Paper p="lg" radius="md" bg="dark.6">
-        <Group gap="xl" wrap="wrap">
-          <RunMeta label="Failing run" run={failingRun} />
-          {passingRun && <RunMeta label="Passing run" run={passingRun} />}
+        <Group gap="xl" wrap="wrap" justify="space-between">
+          <Group gap="xl" wrap="wrap">
+            <RunMeta label="Failing run" run={failingRun} />
+            {passingRun && <RunMeta label="Passing run" run={passingRun} />}
+          </Group>
+          {passingRun && (
+            <Button
+              onClick={() => setSplitMode((v) => !v)}
+              size="sm"
+              variant={splitMode ? "filled" : "outline"}
+              color="blue"
+            >
+              {splitMode ? "Exit Compare" : "Compare"}
+            </Button>
+          )}
         </Group>
       </Paper>
 
-      <Grid>
-        {/* Test list sidebar */}
-        <Grid.Col span={{ base: 12, lg: 3 }}>
-          <Stack gap={4}>
-            <Text size="xs" fw={600} tt="uppercase" c="dimmed" mb="xs">
-              Failed tests ({triageSummaries.length})
-            </Text>
-            {triageSummaries.map((ts, i) => (
-              <UnstyledButton
-                key={i}
-                onClick={() => setSelectedIdx(i)}
-                p="xs"
-                style={(theme) => ({
-                  borderRadius: theme.radius.sm,
-                  backgroundColor: i === selectedIdx ? "var(--mantine-color-dark-5)" : undefined,
-                  "&:hover": { backgroundColor: "var(--mantine-color-dark-5)" },
-                })}
-              >
-                <Text size="sm" fw={500} truncate="end">
-                  {ts.testCase.fullTitle}
-                </Text>
-                <Group gap="xs" mt={4}>
-                  <CategoryBadge category={ts.category} />
-                  <ConfidenceBadge confidence={ts.confidence} />
-                </Group>
-              </UnstyledButton>
-            ))}
-          </Stack>
-        </Grid.Col>
+      {splitMode ? (
+        /* ── Split mode: narrow sidebar + 50/50 failing/passing ── */
+        <Box style={{ display: "flex", gap: 16 }}>
+          {/* Collapsed sidebar */}
+          <Box style={{ width: 64, flexShrink: 0 }}>
+            <Stack gap={4}>
+              <Text size="xs" fw={600} tt="uppercase" c="dimmed" mb="xs">
+                Tests
+              </Text>
+              {triageSummaries.map((ts, i) => (
+                <Tooltip key={i} label={ts.testCase.fullTitle} position="right" withArrow>
+                  <UnstyledButton
+                    onClick={() => setSelectedIdx(i)}
+                    p={6}
+                    w="100%"
+                    style={(theme) => ({
+                      borderRadius: theme.radius.sm,
+                      backgroundColor: i === selectedIdx ? "var(--mantine-color-dark-5)" : undefined,
+                      textAlign: "center",
+                    })}
+                  >
+                    <Badge
+                      size="sm"
+                      variant={i === selectedIdx ? "filled" : "light"}
+                      color={ts.category === "app_regression" ? "red" : ts.category === "flaky_timing" ? "yellow" : "gray"}
+                      w="100%"
+                    >
+                      {i + 1}
+                    </Badge>
+                  </UnstyledButton>
+                </Tooltip>
+              ))}
+            </Stack>
+          </Box>
 
-        {/* Detail panel */}
-        <Grid.Col span={{ base: 12, lg: 9 }}>
-          {selected && selectedCompare && (
-            <DetailPanel
-              triage={selected}
-              compare={selectedCompare}
-              hasPassingRun={!!result.passingRun}
-              sessionId={id}
-              networkRequests={result.networkRequests ?? {}}
-              passingNetworkRequests={result.passingNetworkRequests ?? {}}
-            />
-          )}
-        </Grid.Col>
-      </Grid>
+          {/* Split panes */}
+          <Box style={{ flex: 1, display: "flex", gap: 16, minWidth: 0 }}>
+            {/* Left: Failing */}
+            <Box style={{ width: "50%", overflowY: "auto", maxHeight: "calc(100vh - 160px)" }}>
+              {selected && selectedCompare && (
+                <DetailPanel
+                  triage={selected}
+                  compare={selectedCompare}
+                  hasPassingRun={!!passingRun}
+                  sessionId={id}
+                  networkRequests={result.networkRequests ?? {}}
+                  passingNetworkRequests={result.passingNetworkRequests ?? {}}
+                />
+              )}
+            </Box>
+            {/* Right: Passing */}
+            <Box style={{ width: "50%", overflowY: "auto", maxHeight: "calc(100vh - 160px)" }}>
+              {selectedCompare && (
+                <PassingPanel
+                  passingTest={selectedCompare.match.passingTest}
+                  passingNetworkRequests={result.passingNetworkRequests ?? {}}
+                  sessionId={id}
+                />
+              )}
+            </Box>
+          </Box>
+        </Box>
+      ) : (
+        /* ── Normal mode: full sidebar + single detail panel ── */
+        <Grid>
+          {/* Test list sidebar */}
+          <Grid.Col span={{ base: 12, lg: 3 }}>
+            <Stack gap={4}>
+              <Text size="xs" fw={600} tt="uppercase" c="dimmed" mb="xs">
+                Failed tests ({triageSummaries.length})
+              </Text>
+              {triageSummaries.map((ts, i) => (
+                <UnstyledButton
+                  key={i}
+                  onClick={() => setSelectedIdx(i)}
+                  p="xs"
+                  style={(theme) => ({
+                    borderRadius: theme.radius.sm,
+                    backgroundColor: i === selectedIdx ? "var(--mantine-color-dark-5)" : undefined,
+                    "&:hover": { backgroundColor: "var(--mantine-color-dark-5)" },
+                  })}
+                >
+                  <Text size="sm" fw={500} truncate="end">
+                    {ts.testCase.fullTitle}
+                  </Text>
+                  <Group gap="xs" mt={4}>
+                    <CategoryBadge category={ts.category} />
+                    <ConfidenceBadge confidence={ts.confidence} />
+                  </Group>
+                </UnstyledButton>
+              ))}
+            </Stack>
+          </Grid.Col>
+
+          {/* Detail panel */}
+          <Grid.Col span={{ base: 12, lg: 9 }}>
+            {selected && selectedCompare && (
+              <DetailPanel
+                triage={selected}
+                compare={selectedCompare}
+                hasPassingRun={!!result.passingRun}
+                sessionId={id}
+                networkRequests={result.networkRequests ?? {}}
+                passingNetworkRequests={result.passingNetworkRequests ?? {}}
+              />
+            )}
+          </Grid.Col>
+        </Grid>
+      )}
     </Stack>
   );
 }
@@ -894,7 +974,7 @@ function DivergenceCard({
   );
 }
 
-function EvidenceCard({
+export function EvidenceCard({
   evidence,
   artifacts,
   sessionId,
@@ -1146,7 +1226,7 @@ const STATUS_FILTERS = [
   { label: "ERR", value: "err" },
 ] as const;
 
-function NetworkRequestsPanel({
+export function NetworkRequestsPanel({
   requests,
   attemptLabel,
 }: {
@@ -1284,7 +1364,7 @@ function NetworkRequestsPanel({
   );
 }
 
-function StatusBadge({ status }: { status: number }) {
+export function StatusBadge({ status }: { status: number }) {
   const color =
     status >= 500 ? "red" :
     status >= 400 ? "orange" :
@@ -1298,7 +1378,7 @@ function StatusBadge({ status }: { status: number }) {
   );
 }
 
-function formatBody(body: string, contentType?: string): string {
+export function formatBody(body: string, contentType?: string): string {
   if (contentType?.includes("json") || body.startsWith("{") || body.startsWith("[")) {
     try {
       return JSON.stringify(JSON.parse(body), null, 2);
@@ -1422,7 +1502,7 @@ function ConfidenceBadge({ confidence }: { confidence: string }) {
   );
 }
 
-function EvidenceIcon({ type }: { type: string }) {
+export function EvidenceIcon({ type }: { type: string }) {
   const icons: Record<string, string> = {
     screenshot_diff: "img",
     trace_step: "trc",

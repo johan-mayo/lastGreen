@@ -6,7 +6,6 @@ import {
   Text,
   Group,
   Box,
-  Container,
 } from "@mantine/core";
 import { theme } from "./theme";
 import "./globals.css";
@@ -45,9 +44,9 @@ export default function RootLayout({
             </Group>
           </Box>
 
-          <Container size="xl" py="lg">
+          <Box px="lg" py="lg">
             {children}
-          </Container>
+          </Box>
         </MantineProvider>
       </body>
     </html>
