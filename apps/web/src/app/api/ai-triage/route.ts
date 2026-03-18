@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import type { ComparisonSummary, AiTriageResult } from "@last-green/core";
 
-/** Extract AiTriageResult JSON from model output, handling markdown fences and surrounding text */
+/** Extract AiTriageResult JSON from model output, handling markdown fences, surrounding text, and truncation */
 function extractTriageResult(text: string): AiTriageResult {
   const fallback: AiTriageResult = {
     category: "unknown",
@@ -13,23 +13,64 @@ function extractTriageResult(text: string): AiTriageResult {
     suggestedNextStep: "Review the test failure details manually.",
   };
 
+  function normalize(v: Record<string, unknown>): AiTriageResult {
+    return {
+      category: (v.category as string) ?? "unknown",
+      confidence: (v.confidence as string) ?? "low",
+      diagnosis: (v.diagnosis as string) ?? text,
+      primaryEvidence: Array.isArray(v.primaryEvidence) ? v.primaryEvidence : [],
+      counterEvidence: Array.isArray(v.counterEvidence) ? v.counterEvidence : [],
+      suggestedNextStep: (v.suggestedNextStep as string) ?? "Review the test failure details manually.",
+    } as AiTriageResult;
+  }
+
+  function tryParse(json: string): AiTriageResult | null {
+    try {
+      const p = JSON.parse(json);
+      if (p && typeof p === "object" && p.category && p.diagnosis) return normalize(p);
+    } catch { /* not valid */ }
+    return null;
+  }
+
+  /** Attempt to repair truncated JSON by closing open strings, arrays, and braces */
+  function tryRepairAndParse(json: string): AiTriageResult | null {
+    let repaired = json.trim().replace(/,\s*$/, "");
+    const quotes = (repaired.match(/(?<!\\)"/g) ?? []).length;
+    if (quotes % 2 !== 0) repaired += '"';
+    const opens = { "[": 0, "{": 0 };
+    const closes: Record<string, keyof typeof opens> = { "]": "[", "}": "{" };
+    for (const ch of repaired) {
+      if (ch in opens) opens[ch as keyof typeof opens]++;
+      if (ch in closes) opens[closes[ch]]--;
+    }
+    for (let i = 0; i < opens["["]; i++) repaired += "]";
+    for (let i = 0; i < opens["{"]; i++) repaired += "}";
+    return tryParse(repaired);
+  }
+
   // Strategy 1: extract JSON from inside markdown fences
   const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
   if (fenceMatch) {
-    try { return JSON.parse(fenceMatch[1]); } catch { /* try next */ }
+    const r = tryParse(fenceMatch[1]) ?? tryRepairAndParse(fenceMatch[1]);
+    if (r) return r;
   }
 
   // Strategy 2: find first { to last } and parse
   const firstBrace = text.indexOf("{");
   const lastBrace = text.lastIndexOf("}");
   if (firstBrace !== -1 && lastBrace > firstBrace) {
-    try { return JSON.parse(text.slice(firstBrace, lastBrace + 1)); } catch { /* try next */ }
+    const r = tryParse(text.slice(firstBrace, lastBrace + 1));
+    if (r) return r;
   }
 
-  // Strategy 3: try raw text
-  try { return JSON.parse(text); } catch { /* fallback */ }
+  // Strategy 3: truncated — first { to end, attempt repair
+  if (firstBrace !== -1) {
+    const r = tryRepairAndParse(text.slice(firstBrace));
+    if (r) return r;
+  }
 
-  return fallback;
+  // Strategy 4: try raw text
+  return tryParse(text) ?? fallback;
 }
 
 const SYSTEM_PROMPT = `You are doing evidence-based triage for a failing Playwright e2e test. These tests cover UI, API, and SDK surfaces. A failure may be a genuine bug, or it may be caused by an intentional change to a service that the test hasn't been updated to reflect yet.
@@ -172,7 +213,7 @@ export async function POST(req: NextRequest) {
 
     const response = await client.messages.create({
       model: "claude-opus-4-6",
-      max_tokens: isFollowUp ? 400 : 600,
+      max_tokens: isFollowUp ? 1024 : 1024,
       system: SYSTEM_PROMPT,
       messages,
     });

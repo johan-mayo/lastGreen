@@ -15,25 +15,85 @@ import {
   TextInput,
 } from "@mantine/core";
 
+/** Try to parse a valid AiTriageResult from raw AI text, handling fences and truncation */
 function tryParseTriageResult(text: string): AiTriageResult | null {
-  try {
-    const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
-    if (fenceMatch) {
-      const parsed = JSON.parse(fenceMatch[1]);
-      if (parsed.category && parsed.diagnosis) return parsed;
+  function validate(v: unknown): AiTriageResult | null {
+    if (
+      v &&
+      typeof v === "object" &&
+      "category" in v &&
+      "diagnosis" in v
+    ) {
+      const r = v as AiTriageResult;
+      // Ensure arrays exist even if truncated before them
+      return {
+        category: r.category,
+        confidence: r.confidence ?? "low",
+        diagnosis: r.diagnosis,
+        primaryEvidence: Array.isArray(r.primaryEvidence)
+          ? r.primaryEvidence
+          : [],
+        counterEvidence: Array.isArray(r.counterEvidence)
+          ? r.counterEvidence
+          : [],
+        suggestedNextStep:
+          r.suggestedNextStep ?? "Review the test failure details.",
+      };
     }
-    const firstBrace = text.indexOf("{");
-    const lastBrace = text.lastIndexOf("}");
-    if (firstBrace !== -1 && lastBrace > firstBrace) {
-      const parsed = JSON.parse(text.slice(firstBrace, lastBrace + 1));
-      if (parsed.category && parsed.diagnosis) return parsed;
-    }
-    const parsed = JSON.parse(text);
-    if (parsed.category && parsed.diagnosis) return parsed;
-  } catch {
-    /* not valid JSON */
+    return null;
   }
-  return null;
+
+  function tryParse(json: string): AiTriageResult | null {
+    try {
+      return validate(JSON.parse(json));
+    } catch {
+      return null;
+    }
+  }
+
+  /** Attempt to repair truncated JSON by closing open strings, arrays, and braces */
+  function tryRepairAndParse(json: string): AiTriageResult | null {
+    let repaired = json.trim();
+    // Remove trailing comma
+    repaired = repaired.replace(/,\s*$/, "");
+    // Close any open string (odd number of unescaped quotes)
+    const quotes = (repaired.match(/(?<!\\)"/g) ?? []).length;
+    if (quotes % 2 !== 0) repaired += '"';
+    // Close open arrays and objects
+    const opens = { "[": 0, "{": 0 };
+    const closes: Record<string, keyof typeof opens> = { "]": "[", "}": "{" };
+    for (const ch of repaired) {
+      if (ch in opens) opens[ch as keyof typeof opens]++;
+      if (ch in closes) opens[closes[ch]]--;
+    }
+    for (let i = 0; i < opens["["]; i++) repaired += "]";
+    for (let i = 0; i < opens["{"]; i++) repaired += "}";
+    return tryParse(repaired);
+  }
+
+  // Strategy 1: JSON inside markdown fences
+  const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
+  if (fenceMatch) {
+    const r = tryParse(fenceMatch[1]) ?? tryRepairAndParse(fenceMatch[1]);
+    if (r) return r;
+  }
+
+  // Strategy 2: first { to last }
+  const firstBrace = text.indexOf("{");
+  const lastBrace = text.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    const r = tryParse(text.slice(firstBrace, lastBrace + 1));
+    if (r) return r;
+  }
+
+  // Strategy 3: first { to end (truncated — no closing brace)
+  if (firstBrace !== -1) {
+    const r = tryRepairAndParse(text.slice(firstBrace));
+    if (r) return r;
+  }
+
+  // Strategy 4: raw text
+  return tryParse(text);
 }
 
 const AI_CATEGORY_LABELS: Record<string, string> = {
@@ -162,21 +222,31 @@ export function AiDiagnosisCard({
       : "",
   );
   const [showKeyInput, setShowKeyInput] = useState(false);
-  const [aiResults, setAiResults] = useState<Record<number, AiTriageResult>>(
-    {},
-  );
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
 
   type ConvoMessage = { role: "user" | "assistant"; content: string };
-  const storageKey = `lg-convo-${sessionId}-${testCaseId}`;
+  const convoKey = `lg-convo-${sessionId}-${testCaseId}`;
+  const resultsKey = `lg-ai-results-${sessionId}-${testCaseId}`;
+
+  const [aiResults, setAiResults] = useState<Record<number, AiTriageResult>>(
+    () => {
+      if (typeof window === "undefined") return {};
+      try {
+        const stored = sessionStorage.getItem(resultsKey);
+        return stored ? JSON.parse(stored) : {};
+      } catch {
+        return {};
+      }
+    },
+  );
 
   const [conversations, setConversations] = useState<
     Record<number, ConvoMessage[]>
   >(() => {
     if (typeof window === "undefined") return {};
     try {
-      const stored = sessionStorage.getItem(storageKey);
+      const stored = sessionStorage.getItem(convoKey);
       return stored ? JSON.parse(stored) : {};
     } catch {
       return {};
@@ -186,8 +256,13 @@ export function AiDiagnosisCard({
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    sessionStorage.setItem(storageKey, JSON.stringify(conversations));
-  }, [conversations, storageKey]);
+    sessionStorage.setItem(convoKey, JSON.stringify(conversations));
+  }, [conversations, convoKey]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    sessionStorage.setItem(resultsKey, JSON.stringify(aiResults));
+  }, [aiResults, resultsKey]);
 
   const requestAiTriage = useCallback(async () => {
     if (!apiKey.trim()) {
@@ -258,9 +333,8 @@ export function AiDiagnosisCard({
           { role: "assistant" as const, content: data.rawResponse },
         ],
       }));
-      if (data.result) {
-        setAiResults((prev) => ({ ...prev, [idx]: data.result }));
-      }
+      // Don't overwrite the initial diagnosis — follow-up results
+      // are already shown inline in the conversation thread.
     } catch (e) {
       setAiError(e instanceof Error ? e.message : "Follow-up failed");
     } finally {

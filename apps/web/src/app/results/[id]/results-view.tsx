@@ -625,6 +625,7 @@ function DetailPanel({
           <Stack gap="md">
             <ErrorBlock message={currentAttempt.error.message ?? ""} stack={currentAttempt.error.stack} />
             <AiDiagnosisCard
+              key={`${testCase.id}-${attemptIdx}`}
               comparisonSummary={comparisonSummary}
               attemptIdx={attemptIdx}
               sessionId={sessionId}
