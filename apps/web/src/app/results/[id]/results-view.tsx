@@ -39,7 +39,9 @@ import {
   Tooltip,
   UnstyledButton,
 } from "@mantine/core";
+import { CodeHighlight } from "@mantine/code-highlight";
 import { PassingPanel } from "./passing-panel";
+import { NetworkRequestsPanel } from "../../components/network-requests-panel";
 
 /** Try to parse a string as AiTriageResult JSON (handles markdown fences) */
 function tryParseTriageResult(text: string): AiTriageResult | null {
@@ -1079,9 +1081,14 @@ function ErrorBlock({ message, stack }: { message: string; stack?: string }) {
         </Text>
       </Paper>
       {detail && (
-        <Code block style={{ borderTopLeftRadius: 0, borderTopRightRadius: 0, maxHeight: 256, overflow: "auto", whiteSpace: "pre-wrap", fontSize: "var(--mantine-font-size-xs)" }}>
-          {detail}
-        </Code>
+        <CodeHighlight
+          code={detail}
+          language="javascript"
+          withCopyButton={false}
+          styles={{
+            codeHighlight: { borderTopLeftRadius: 0, borderTopRightRadius: 0, maxHeight: 256, overflow: "auto", fontSize: "var(--mantine-font-size-xs)" },
+          }}
+        />
       )}
     </Box>
   );
@@ -1216,176 +1223,6 @@ function AttemptSteps({
   );
 }
 
-// ---- Network Requests Panel ----
-
-const STATUS_FILTERS = [
-  { label: "All", value: "all" },
-  { label: "4xx", value: "4xx" },
-  { label: "5xx", value: "5xx" },
-  { label: "3xx", value: "3xx" },
-  { label: "ERR", value: "err" },
-] as const;
-
-export function NetworkRequestsPanel({
-  requests,
-  attemptLabel,
-}: {
-  requests: NetworkRequest[];
-  attemptLabel?: number;
-}) {
-  const [urlFilter, setUrlFilter] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("all");
-  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
-
-  const filtered = useMemo(() => {
-    return requests.filter((r) => {
-      if (urlFilter && !r.url.toLowerCase().includes(urlFilter.toLowerCase())) return false;
-      if (statusFilter === "4xx" && (r.status < 400 || r.status >= 500)) return false;
-      if (statusFilter === "5xx" && r.status < 500) return false;
-      if (statusFilter === "3xx" && (r.status < 300 || r.status >= 400)) return false;
-      if (statusFilter === "err" && r.status > 0) return false;
-      return true;
-    });
-  }, [requests, urlFilter, statusFilter]);
-
-  return (
-    <Alert variant="light" color="orange" radius="md" p="lg" title={
-      `Non-2xx network requests${attemptLabel ? ` — attempt ${attemptLabel}` : ""} (${filtered.length}/${requests.length})`
-    }>
-      {/* Filters */}
-      <Group mt="sm" gap="sm" wrap="wrap">
-        <TextInput
-          placeholder="Filter by URL..."
-          value={urlFilter}
-          onChange={(e) => setUrlFilter(e.currentTarget.value)}
-          size="xs"
-          style={{ flex: 1, minWidth: 150, maxWidth: 300 }}
-        />
-        <SegmentedControl
-          size="xs"
-          value={statusFilter}
-          onChange={setStatusFilter}
-          data={STATUS_FILTERS.map((f) => ({ label: f.label, value: f.value }))}
-        />
-      </Group>
-
-      {/* Request list */}
-      <Stack gap={4} mt="sm">
-        {filtered.map((r, i) => (
-          <Paper key={i} radius="sm" bg="dark.6" style={{ overflow: "hidden" }}>
-            <UnstyledButton
-              onClick={() => setExpandedIdx(expandedIdx === i ? null : i)}
-              w="100%"
-              p="xs"
-            >
-              <Group justify="space-between" gap="sm" wrap="nowrap">
-                <Group gap="xs" wrap="nowrap" style={{ minWidth: 0, overflow: "hidden" }}>
-                  <Code>{r.method}</Code>
-                  <Text size="xs" ff="monospace" truncate="end">{r.url}</Text>
-                </Group>
-                <Group gap="sm" wrap="nowrap" style={{ flexShrink: 0 }}>
-                  <StatusBadge status={r.status} />
-                  <Text size="xs" c="dimmed" w={48} ta="right">{r.duration}ms</Text>
-                  <Text size="xs" c="dimmed">{expandedIdx === i ? "\u25B2" : "\u25BC"}</Text>
-                </Group>
-              </Group>
-            </UnstyledButton>
-
-            <Collapse in={expandedIdx === i}>
-              <Box p="sm" style={{ borderTop: "1px solid var(--mantine-color-dark-4)" }}>
-                <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="md">
-                  {/* Request side */}
-                  <Box>
-                    <Text size="xs" fw={600} tt="uppercase" c="dimmed" mb="xs">Request</Text>
-                    {r.requestContentType && (
-                      <Text size="xs" c="dimmed" mb={4}>Content-Type: {r.requestContentType}</Text>
-                    )}
-                    {r.requestHeaders && r.requestHeaders.length > 0 && (
-                      <details style={{ marginBottom: 8 }}>
-                        <summary style={{ cursor: "pointer", fontSize: "var(--mantine-font-size-xs)", color: "var(--mantine-color-dimmed)" }}>
-                          Headers ({r.requestHeaders.length})
-                        </summary>
-                        <Code block mt={4} style={{ maxHeight: 160, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-                          {r.requestHeaders.map((h) => `${h.name}: ${h.value}`).join("\n")}
-                        </Code>
-                      </details>
-                    )}
-                    {r.requestBody ? (
-                      <Box>
-                        <Text size="xs" c="dimmed" mb={4}>Body:</Text>
-                        <Code block style={{ maxHeight: 192, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-                          {formatBody(r.requestBody, r.requestContentType)}
-                        </Code>
-                      </Box>
-                    ) : (
-                      <Text size="xs" c="dimmed" fs="italic">No request body</Text>
-                    )}
-                  </Box>
-
-                  {/* Response side */}
-                  <Box>
-                    <Text size="xs" fw={600} tt="uppercase" c="dimmed" mb="xs">
-                      Response — {r.status <= 0 ? "Failed" : r.status} {r.statusText}
-                    </Text>
-                    {r.responseContentType && (
-                      <Text size="xs" c="dimmed" mb={4}>Content-Type: {r.responseContentType}</Text>
-                    )}
-                    {r.responseHeaders && r.responseHeaders.length > 0 && (
-                      <details style={{ marginBottom: 8 }}>
-                        <summary style={{ cursor: "pointer", fontSize: "var(--mantine-font-size-xs)", color: "var(--mantine-color-dimmed)" }}>
-                          Headers ({r.responseHeaders.length})
-                        </summary>
-                        <Code block mt={4} style={{ maxHeight: 160, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-                          {r.responseHeaders.map((h) => `${h.name}: ${h.value}`).join("\n")}
-                        </Code>
-                      </details>
-                    )}
-                    {r.responseBody ? (
-                      <Box>
-                        <Text size="xs" c="dimmed" mb={4}>Body:</Text>
-                        <Code block style={{ maxHeight: 192, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-                          {formatBody(r.responseBody, r.responseContentType)}
-                        </Code>
-                      </Box>
-                    ) : (
-                      <Text size="xs" c="dimmed" fs="italic">No response body</Text>
-                    )}
-                  </Box>
-                </SimpleGrid>
-              </Box>
-            </Collapse>
-          </Paper>
-        ))}
-        {filtered.length === 0 && (
-          <Text size="xs" c="dimmed" py="xs">No requests match filters.</Text>
-        )}
-      </Stack>
-    </Alert>
-  );
-}
-
-export function StatusBadge({ status }: { status: number }) {
-  const color =
-    status >= 500 ? "red" :
-    status >= 400 ? "orange" :
-    status >= 300 ? "yellow" :
-    status <= 0 ? "red" :
-    "gray";
-  return (
-    <Badge size="sm" variant="light" color={color} fw={700}>
-      {status <= 0 ? "ERR" : status}
-    </Badge>
-  );
-}
-
-export function formatBody(body: string, contentType?: string): string {
-  if (contentType?.includes("json") || body.startsWith("{") || body.startsWith("[")) {
-    try {
-      return JSON.stringify(JSON.parse(body), null, 2);
-    } catch { /* not valid JSON */ }
-  }
-  return body;
-}
 
 // ---- AI Triage Result ----
 

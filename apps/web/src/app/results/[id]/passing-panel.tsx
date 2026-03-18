@@ -19,7 +19,7 @@ import {
   SimpleGrid,
   Title,
 } from "@mantine/core";
-import { NetworkRequestsPanel } from "./results-view";
+import { NetworkRequestsPanel } from "../../components/network-requests-panel";
 
 export function PassingPanel({
   passingTest,
