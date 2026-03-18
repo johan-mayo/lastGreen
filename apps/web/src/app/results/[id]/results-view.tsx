@@ -16,6 +16,28 @@ import type {
   AiTriageResult,
 } from "@last-green/core";
 import type { CompareResult } from "@last-green/core";
+import {
+  Alert,
+  Badge,
+  Box,
+  Button,
+  Card,
+  Code,
+  Collapse,
+  Grid,
+  Group,
+  Image,
+  List,
+  Paper,
+  SegmentedControl,
+  SimpleGrid,
+  Stack,
+  Table,
+  Text,
+  TextInput,
+  Title,
+  UnstyledButton,
+} from "@mantine/core";
 
 /** Try to parse a string as AiTriageResult JSON (handles markdown fences) */
 function tryParseTriageResult(text: string): AiTriageResult | null {
@@ -70,7 +92,6 @@ function findFailingStepInAttempt(
     if (step.error) {
       return { step, index: i };
     }
-    // Check children but return the parent step with the parent's index
     if (step.children && step.children.length > 0) {
       const childFail = findFailingStepInChildren(step.children);
       if (childFail) return { step: childFail, index: i };
@@ -104,7 +125,6 @@ function getAttemptSummary(attempt: NormalizedTestResult | undefined): {
   const errorHeadline = cleanError.split("\n")[0] || null;
   const errorLower = cleanError.toLowerCase();
 
-  // Generate context-specific next step suggestion per attempt
   let suggestedNextStep: string;
 
   if (errorLower.includes("intercepts pointer events") || errorLower.includes("subtree intercepts pointer")) {
@@ -154,12 +174,10 @@ function buildRequestDiffs(
   failRequests: NetworkRequest[],
   passRequests: NetworkRequest[],
 ): RequestDiff[] {
-  // Only consider 4xx, 5xx, and connection errors
   const diagnosticFail = failRequests.filter(
     (r) => (r.status >= 400 || r.status <= 0) && !isIrrelevantRequest(r)
   );
 
-  // Index passing requests by method+pathname for lookup
   const passIndex = new Map<string, NetworkRequest[]>();
   for (const r of passRequests) {
     let pathname: string;
@@ -177,7 +195,6 @@ function buildRequestDiffs(
     const key = `${fr.method}::${pathname}`;
     const passMatches = passIndex.get(key) ?? [];
 
-    // Check if same endpoint also failed in passing run
     const alsoFailedInPass = passMatches.some(
       (pr) => pr.status >= 400 || pr.status <= 0
     );
@@ -210,7 +227,6 @@ function buildRequestDiffs(
     });
   }
 
-  // Sort: changed-between-runs first, also-failed-in-pass last
   diffs.sort((a, b) => {
     if (a.changedBetweenRuns && !b.changedBetweenRuns) return -1;
     if (!a.changedBetweenRuns && b.changedBetweenRuns) return 1;
@@ -237,7 +253,6 @@ function buildComparisonSummary(
     compare.match.passingTest.results.length - 1
   ];
 
-  // Step diffs around divergence
   const failSteps = currentAttempt?.steps ?? [];
   const passSteps = passResult?.steps ?? [];
   const divIdx = attemptSummary.failingStep?.index ?? 0;
@@ -279,10 +294,8 @@ function buildComparisonSummary(
     }
   }
 
-  // Request diffs
   const requestDiffs = buildRequestDiffs(failRequests, passRequests);
 
-  // Console diffs — stderr lines only in failing attempt
   const failStderr = currentAttempt?.stderr ?? [];
   const passStderr = passResult?.stderr ?? [];
   const passStderrSet = new Set(passStderr);
@@ -290,7 +303,6 @@ function buildComparisonSummary(
     (s) => !passStderrSet.has(s) && (s.toLowerCase().includes("error") || s.toLowerCase().includes("fail"))
   );
 
-  // Red herrings
   const likelyRedHerrings: string[] = [];
   for (const rd of requestDiffs) {
     if (rd.alsoFailedInPass) {
@@ -298,7 +310,6 @@ function buildComparisonSummary(
     }
   }
 
-  // Build divergence info from the compare engine's result for this attempt
   const firstDivergence = attemptSummary.failingStep
     ? {
         stepIndex: attemptSummary.failingStep.index,
@@ -344,12 +355,10 @@ export function ResultsView({ id }: { id: string }) {
   }, [id]);
 
   if (error) {
-    return (
-      <div className="rounded-lg bg-red-900/20 p-6 text-red-400">{error}</div>
-    );
+    return <Alert color="red" variant="light">{error}</Alert>;
   }
   if (!result) {
-    return <div className="text-zinc-500">Loading analysis...</div>;
+    return <Text c="dimmed">Loading analysis...</Text>;
   }
 
   const { failingRun, passingRun, triageSummaries, compareResults } = result;
@@ -357,55 +366,60 @@ export function ResultsView({ id }: { id: string }) {
   const selectedCompare = compareResults[selectedIdx];
 
   return (
-    <div className="flex flex-col gap-8">
+    <Stack gap="lg">
       {/* Run metadata */}
-      <section className="flex flex-wrap gap-6 rounded-lg bg-zinc-900 p-6">
-        <RunMeta label="Failing run" run={failingRun} />
-        {passingRun && <RunMeta label="Passing run" run={passingRun} />}
-      </section>
+      <Paper p="lg" radius="md" bg="dark.6">
+        <Group gap="xl" wrap="wrap">
+          <RunMeta label="Failing run" run={failingRun} />
+          {passingRun && <RunMeta label="Passing run" run={passingRun} />}
+        </Group>
+      </Paper>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[220px_1fr]">
+      <Grid>
         {/* Test list sidebar */}
-        <aside className="flex flex-col gap-1">
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wider text-zinc-500">
-            Failed tests ({triageSummaries.length})
-          </h2>
-          {triageSummaries.map((ts, i) => (
-            <button
-              key={i}
-              onClick={() => setSelectedIdx(i)}
-              className={`rounded-md px-3 py-2 text-left text-sm transition-colors ${
-                i === selectedIdx
-                  ? "bg-zinc-800 text-white"
-                  : "text-zinc-400 hover:bg-zinc-800/50 hover:text-zinc-200"
-              }`}
-            >
-              <div className="truncate font-medium">
-                {ts.testCase.fullTitle}
-              </div>
-              <div className="mt-0.5 flex items-center gap-2">
-                <CategoryBadge category={ts.category} />
-                <ConfidenceBadge confidence={ts.confidence} />
-              </div>
-            </button>
-          ))}
-        </aside>
+        <Grid.Col span={{ base: 12, lg: 3 }}>
+          <Stack gap={4}>
+            <Text size="xs" fw={600} tt="uppercase" c="dimmed" mb="xs">
+              Failed tests ({triageSummaries.length})
+            </Text>
+            {triageSummaries.map((ts, i) => (
+              <UnstyledButton
+                key={i}
+                onClick={() => setSelectedIdx(i)}
+                p="xs"
+                style={(theme) => ({
+                  borderRadius: theme.radius.sm,
+                  backgroundColor: i === selectedIdx ? "var(--mantine-color-dark-5)" : undefined,
+                  "&:hover": { backgroundColor: "var(--mantine-color-dark-5)" },
+                })}
+              >
+                <Text size="sm" fw={500} truncate="end">
+                  {ts.testCase.fullTitle}
+                </Text>
+                <Group gap="xs" mt={4}>
+                  <CategoryBadge category={ts.category} />
+                  <ConfidenceBadge confidence={ts.confidence} />
+                </Group>
+              </UnstyledButton>
+            ))}
+          </Stack>
+        </Grid.Col>
 
         {/* Detail panel */}
-        {selected && selectedCompare && (
-          <div className="min-w-0">
-          <DetailPanel
-            triage={selected}
-            compare={selectedCompare}
-            hasPassingRun={!!result.passingRun}
-            sessionId={id}
-            networkRequests={result.networkRequests ?? {}}
-            passingNetworkRequests={result.passingNetworkRequests ?? {}}
-          />
-          </div>
-        )}
-      </div>
-    </div>
+        <Grid.Col span={{ base: 12, lg: 9 }}>
+          {selected && selectedCompare && (
+            <DetailPanel
+              triage={selected}
+              compare={selectedCompare}
+              hasPassingRun={!!result.passingRun}
+              sessionId={id}
+              networkRequests={result.networkRequests ?? {}}
+              passingNetworkRequests={result.passingNetworkRequests ?? {}}
+            />
+          )}
+        </Grid.Col>
+      </Grid>
+    </Stack>
   );
 }
 
@@ -417,23 +431,21 @@ function RunMeta({
   run: { commitSha?: string; branch?: string; stats: { total: number; passed: number; failed: number; flaky: number; skipped: number }; duration: number };
 }) {
   return (
-    <div className="flex flex-col gap-1">
-      <span className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
+    <Stack gap={4}>
+      <Text size="xs" fw={600} tt="uppercase" c="dimmed">
         {label}
-      </span>
+      </Text>
       {run.commitSha && (
-        <span className="font-mono text-sm text-zinc-300">
-          {run.commitSha.slice(0, 8)}
-        </span>
+        <Code>{run.commitSha.slice(0, 8)}</Code>
       )}
       {run.branch && (
-        <span className="text-sm text-zinc-400">{run.branch}</span>
+        <Text size="sm" c="dimmed">{run.branch}</Text>
       )}
-      <span className="text-sm text-zinc-500">
+      <Text size="sm" c="dimmed">
         {run.stats.total} tests | {run.stats.passed} passed | {run.stats.failed}{" "}
         failed | {Math.round(run.duration / 1000)}s
-      </span>
-    </div>
+      </Text>
+    </Stack>
   );
 }
 
@@ -466,7 +478,6 @@ function DetailPanel({
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
 
-  // Conversation state per attempt — stored in sessionStorage
   type ConvoMessage = { role: "user" | "assistant"; content: string };
   const storageKey = `lg-convo-${sessionId}-${testCase.id}`;
 
@@ -479,20 +490,17 @@ function DetailPanel({
   });
   const [followUpInput, setFollowUpInput] = useState("");
 
-  // Persist conversations to sessionStorage
   useEffect(() => {
     if (typeof window === "undefined") return;
     sessionStorage.setItem(storageKey, JSON.stringify(conversations));
   }, [conversations, storageKey]);
 
-  // Failing network requests for current attempt
   const failingRequests = useMemo(() => {
     const key = `${testCase.id}:${currentAttempt?.attempt ?? 0}`;
     const all = networkRequestsMap[key] ?? [];
     return all.filter((r) => r.failed);
   }, [testCase.id, currentAttempt, networkRequestsMap]);
 
-  // Passing network requests for comparison
   const passingRequests = useMemo(() => {
     const passingTest = compare.match.passingTest;
     if (!passingTest) return [];
@@ -503,19 +511,16 @@ function DetailPanel({
     return passingNetworkRequestsMap[key] ?? [];
   }, [compare.match.passingTest, passingNetworkRequestsMap]);
 
-  // Compute per-attempt analysis
   const attemptSummary = useMemo(
     () => getAttemptSummary(currentAttempt),
     [currentAttempt]
   );
 
-  // Build a per-attempt divergence from the failing step
   const attemptDivergence: Divergence | null = useMemo(() => {
     if (!attemptSummary.failingStep) return null;
     const { step, index } = attemptSummary.failingStep;
     const errorMsg = step.error?.message?.replace(/\[\d+m/g, "").split("\n")[0] ?? "unknown error";
 
-    // Look up the corresponding passing step if we have a passing run
     const passSteps = compare.match.passingTest?.results[
       compare.match.passingTest.results.length - 1
     ]?.steps;
@@ -531,7 +536,6 @@ function DetailPanel({
     };
   }, [attemptSummary, compare]);
 
-  // Pre-compute comparison summary for AI calls
   const comparisonSummary = useMemo(() => {
     const allFailRequests = networkRequestsMap[`${testCase.id}:${currentAttempt?.attempt ?? 0}`] ?? [];
     return buildComparisonSummary(
@@ -559,7 +563,6 @@ function DetailPanel({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Request failed");
       setAiResults((prev) => ({ ...prev, [idx]: data.result }));
-      // Start conversation with the raw AI response
       setConversations((prev) => ({
         ...prev,
         [idx]: [{ role: "assistant" as const, content: data.rawResponse }],
@@ -601,7 +604,6 @@ function DetailPanel({
         ...prev,
         [idx]: [...updatedHistory, { role: "assistant" as const, content: data.rawResponse }],
       }));
-      // Update the structured result so the card reflects the latest diagnosis
       if (data.result) {
         setAiResults((prev) => ({ ...prev, [idx]: data.result }));
       }
@@ -613,37 +615,38 @@ function DetailPanel({
   }, [apiKey, attemptIdx, followUpInput, conversations, comparisonSummary]);
 
   return (
-    <div className="flex flex-col gap-6">
+    <Stack gap="md">
       <TriageCard triage={triage} suggestedNextStep={attemptSummary.suggestedNextStep} />
 
       {/* Attempt toggle */}
       {attempts.length > 1 && (
-        <section className="flex items-center gap-3 rounded-lg bg-zinc-900 px-6 py-4">
-          <span className="text-sm font-medium text-zinc-400">Attempt:</span>
-          <div className="flex gap-1">
-            {attempts.map((attempt, i) => (
-              <button
-                key={i}
-                onClick={() => setAttemptIdx(i)}
-                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                  i === attemptIdx
-                    ? attempt.status === "passed"
-                      ? "bg-emerald-900/50 text-emerald-300"
-                      : "bg-red-900/50 text-red-300"
-                    : "bg-zinc-800 text-zinc-500 hover:text-zinc-300"
-                }`}
-              >
-                {i + 1}
-                <span className="ml-1.5 text-xs">
-                  {attempt.status === "passed" ? "pass" : "fail"}
-                </span>
-              </button>
-            ))}
-          </div>
-          <span className="text-xs text-zinc-600">
-            {currentAttempt?.duration ? `${Math.round(currentAttempt.duration / 1000)}s` : ""}
-          </span>
-        </section>
+        <Paper p="md" radius="md" bg="dark.6">
+          <Group gap="sm">
+            <Text size="sm" fw={500} c="dimmed">Attempt:</Text>
+            <Group gap={4}>
+              {attempts.map((attempt, i) => (
+                <Button
+                  key={i}
+                  onClick={() => setAttemptIdx(i)}
+                  size="xs"
+                  variant={i === attemptIdx ? "filled" : "subtle"}
+                  color={i === attemptIdx
+                    ? (attempt.status === "passed" ? "green" : "red")
+                    : "gray"
+                  }
+                >
+                  {i + 1}{" "}
+                  <Text span size="xs" ml={4}>
+                    {attempt.status === "passed" ? "pass" : "fail"}
+                  </Text>
+                </Button>
+              ))}
+            </Group>
+            <Text size="xs" c="dimmed">
+              {currentAttempt?.duration ? `${Math.round(currentAttempt.duration / 1000)}s` : ""}
+            </Text>
+          </Group>
+        </Paper>
       )}
 
       {/* Per-attempt failing step */}
@@ -656,12 +659,12 @@ function DetailPanel({
 
       {/* Per-attempt error */}
       {currentAttempt?.error && (
-        <section className="rounded-lg bg-zinc-900 p-6">
-          <h4 className="text-sm font-semibold uppercase tracking-wider text-zinc-500">
+        <Paper p="lg" radius="md" bg="dark.6">
+          <Text size="xs" fw={600} tt="uppercase" c="dimmed">
             Error{attempts.length > 1 ? ` — attempt ${attemptIdx + 1}` : ""}
-          </h4>
+          </Text>
           <ErrorBlock message={currentAttempt.error.message ?? ""} stack={currentAttempt.error.stack} />
-        </section>
+        </Paper>
       )}
 
       {/* Non-2xx network requests for this attempt */}
@@ -679,28 +682,29 @@ function DetailPanel({
       />
 
       {/* AI Triage */}
-      <section className="rounded-lg bg-zinc-900 p-6">
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <h4 className="text-sm font-semibold uppercase tracking-wider text-zinc-500">
+      <Paper p="lg" radius="md" bg="dark.6">
+        <Group justify="space-between" wrap="wrap" gap="sm">
+          <Text size="xs" fw={600} tt="uppercase" c="dimmed">
             AI Diagnosis
-          </h4>
-          <div className="flex items-center gap-2 flex-wrap">
+          </Text>
+          <Group gap="xs" wrap="wrap">
             {showKeyInput && (
-              <input
+              <TextInput
                 type="password"
                 placeholder="Anthropic API key"
                 value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
+                onChange={(e) => setApiKey(e.currentTarget.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && apiKey.trim()) {
                     setShowKeyInput(false);
                     requestAiTriage();
                   }
                 }}
-                className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-200 placeholder-zinc-500 focus:border-violet-500 focus:outline-none w-64"
+                size="xs"
+                w={256}
               />
             )}
-            <button
+            <Button
               onClick={() => {
                 if (!apiKey.trim()) {
                   setShowKeyInput(true);
@@ -708,75 +712,74 @@ function DetailPanel({
                   requestAiTriage();
                 }
               }}
+              loading={aiLoading && !aiResults[attemptIdx]}
               disabled={aiLoading}
-              className="rounded-md bg-violet-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              size="xs"
+              color="violet"
             >
-              {aiLoading && !aiResults[attemptIdx]
-                ? "Analyzing..."
-                : aiResults[attemptIdx]
-                  ? "Re-analyze"
-                  : "Diagnose with AI"}
-            </button>
+              {aiResults[attemptIdx] ? "Re-analyze" : "Diagnose with AI"}
+            </Button>
             {apiKey && (
-              <button
+              <Button
                 onClick={() => setShowKeyInput(!showKeyInput)}
-                className="text-xs text-zinc-600 hover:text-zinc-400"
-                title="Toggle API key input"
+                size="xs"
+                variant="subtle"
+                color="gray"
               >
                 key
-              </button>
+              </Button>
             )}
-          </div>
-        </div>
+          </Group>
+        </Group>
+
         {aiError && (
-          <div className="mt-3 rounded-md bg-red-950/30 px-4 py-2 text-sm text-red-400">
+          <Alert color="red" variant="light" mt="sm">
             {aiError}
-          </div>
+          </Alert>
         )}
+
         {aiResults[attemptIdx] && (
           <AiTriageResultCard result={aiResults[attemptIdx]} />
         )}
 
-        {/* Conversation thread — user messages + updated AI cards */}
+        {/* Conversation thread */}
         {conversations[attemptIdx] && conversations[attemptIdx].length > 1 && (
-          <div className="mt-4 flex flex-col gap-3">
+          <Stack gap="sm" mt="md">
             {conversations[attemptIdx].slice(1).map((msg, i) => {
               if (msg.role === "user") {
                 return (
-                  <div key={i} className="rounded-md bg-zinc-800 px-4 py-3 text-sm text-zinc-200 ml-8">
-                    <span className="text-xs font-medium uppercase tracking-wider text-zinc-500 block mb-1">You</span>
-                    <p className="leading-relaxed whitespace-pre-wrap">{msg.content}</p>
-                  </div>
+                  <Paper key={i} p="sm" radius="sm" bg="dark.5" ml="xl">
+                    <Text size="xs" fw={500} tt="uppercase" c="dimmed" mb={4}>You</Text>
+                    <Text size="sm" style={{ whiteSpace: "pre-wrap" }}>{msg.content}</Text>
+                  </Paper>
                 );
               }
-              // AI message — try to parse as structured result
               const parsed = tryParseTriageResult(msg.content);
               if (parsed) {
                 return <AiTriageResultCard key={i} result={parsed} />;
               }
               return (
-                <div key={i} className="rounded-md bg-violet-950/20 border border-violet-800/30 px-4 py-3 text-sm text-zinc-300 mr-8">
-                  <span className="text-xs font-medium uppercase tracking-wider text-zinc-500 block mb-1">AI</span>
-                  <p className="leading-relaxed whitespace-pre-wrap">{msg.content}</p>
-                </div>
+                <Paper key={i} p="sm" radius="sm" mr="xl" withBorder style={{ borderColor: "var(--mantine-color-violet-9)" }}>
+                  <Text size="xs" fw={500} tt="uppercase" c="dimmed" mb={4}>AI</Text>
+                  <Text size="sm" style={{ whiteSpace: "pre-wrap" }}>{msg.content}</Text>
+                </Paper>
               );
             })}
             {aiLoading && (
-              <div className="bg-violet-950/20 border border-violet-800/30 rounded-md px-4 py-3 text-sm text-zinc-500 mr-8">
-                Thinking...
-              </div>
+              <Paper p="sm" radius="sm" mr="xl" withBorder style={{ borderColor: "var(--mantine-color-violet-9)" }}>
+                <Text size="sm" c="dimmed">Thinking...</Text>
+              </Paper>
             )}
-          </div>
+          </Stack>
         )}
 
-        {/* Follow-up input — only show after initial diagnosis */}
+        {/* Follow-up input */}
         {aiResults[attemptIdx] && (
-          <div className="mt-3 flex gap-2">
-            <input
-              type="text"
+          <Group mt="sm" gap="xs">
+            <TextInput
               placeholder="Ask a follow-up question..."
               value={followUpInput}
-              onChange={(e) => setFollowUpInput(e.target.value)}
+              onChange={(e) => setFollowUpInput(e.currentTarget.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey && followUpInput.trim()) {
                   e.preventDefault();
@@ -784,38 +787,42 @@ function DetailPanel({
                 }
               }}
               disabled={aiLoading}
-              className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 focus:border-violet-500 focus:outline-none disabled:opacity-50"
+              size="sm"
+              style={{ flex: 1 }}
             />
-            <button
+            <Button
               onClick={sendFollowUp}
               disabled={aiLoading || !followUpInput.trim()}
-              className="rounded-md bg-violet-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+              size="sm"
+              color="violet"
             >
               Send
-            </button>
-          </div>
+            </Button>
+          </Group>
         )}
-      </section>
+      </Paper>
 
       <AttemptSteps attempt={currentAttempt} attemptIdx={attemptIdx} compare={compare} hasPassingRun={hasPassingRun} />
-    </div>
+    </Stack>
   );
 }
 
 function TriageCard({ triage, suggestedNextStep }: { triage: TriageSummary; suggestedNextStep?: string }) {
   return (
-    <section className="rounded-lg bg-zinc-900 p-6">
-      <h3 className="text-lg font-semibold">{triage.testCase.fullTitle}</h3>
-      <p className="mt-2 text-sm text-zinc-300">{triage.summary}</p>
-      <div className="mt-4 flex flex-wrap gap-3">
+    <Paper p="lg" radius="md" bg="dark.6">
+      <Title order={3}>{triage.testCase.fullTitle}</Title>
+      <Text size="sm" mt="xs">{triage.summary}</Text>
+      <Group gap="sm" mt="md">
         <CategoryBadge category={triage.category} />
         <ConfidenceBadge confidence={triage.confidence} />
-      </div>
-      <div className="mt-4 rounded-md bg-zinc-800 px-4 py-3 text-sm text-zinc-300">
-        <span className="font-medium text-zinc-100">Next step: </span>
-        {suggestedNextStep ?? triage.suggestedNextStep}
-      </div>
-    </section>
+      </Group>
+      <Paper p="sm" radius="sm" mt="md" bg="dark.5">
+        <Text size="sm">
+          <Text span fw={500}>Next step: </Text>
+          {suggestedNextStep ?? triage.suggestedNextStep}
+        </Text>
+      </Paper>
+    </Paper>
   );
 }
 
@@ -828,70 +835,62 @@ function DivergenceCard({
 }) {
   if (!divergence) {
     return (
-      <section className="rounded-lg border border-zinc-800 p-6 text-zinc-500">
-        {hasPassingRun
-          ? "No step-level divergence detected."
-          : "No failing step identified."}
-      </section>
+      <Paper p="lg" radius="md" withBorder>
+        <Text c="dimmed">
+          {hasPassingRun
+            ? "No step-level divergence detected."
+            : "No failing step identified."}
+        </Text>
+      </Paper>
     );
   }
 
-  // Single-run mode: show the failing step, not a "divergence"
   if (!hasPassingRun) {
     return (
-      <section className="rounded-lg border border-red-700/40 bg-red-950/20 p-6">
-        <h4 className="text-sm font-semibold uppercase tracking-wider text-red-400">
-          Failing step — step {divergence.stepIndex}
-        </h4>
-        <p className="mt-2 font-mono text-sm text-zinc-200">
-          {divergence.failingStep?.title ?? "Unknown step"}
-        </p>
-        <p className="mt-2 text-sm text-zinc-400">
+      <Alert variant="light" color="red" title={`Failing step — step ${divergence.stepIndex}`} radius="md">
+        <Code block>{divergence.failingStep?.title ?? "Unknown step"}</Code>
+        <Text size="sm" c="dimmed" mt="xs">
           {divergence.description}
-        </p>
-        <div className="mt-3 flex gap-3 text-xs">
-          <span className="rounded bg-zinc-800 px-2 py-1 text-zinc-400">
+        </Text>
+        <Group gap="xs" mt="sm">
+          <Badge size="sm" variant="outline" color="gray">
             Significance: {divergence.significance}
-          </span>
-        </div>
-      </section>
+          </Badge>
+        </Group>
+      </Alert>
     );
   }
 
-  // Two-run mode: show side-by-side divergence
   return (
-    <section className="rounded-lg border border-amber-700/40 bg-amber-950/20 p-6">
-      <h4 className="text-sm font-semibold uppercase tracking-wider text-amber-400">
-        First divergence — step {divergence.stepIndex}
-      </h4>
-      <p className="mt-2 text-sm text-zinc-200">{divergence.description}</p>
-      <div className="mt-3 flex gap-3 text-xs">
-        <span className="rounded bg-zinc-800 px-2 py-1 text-zinc-400">
+    <Alert variant="light" color="yellow" title={`First divergence — step ${divergence.stepIndex}`} radius="md">
+      <Text size="sm">{divergence.description}</Text>
+      <Group gap="xs" mt="sm">
+        <Badge size="sm" variant="outline" color="gray">
           Type: {divergence.type.replace(/_/g, " ")}
-        </span>
-        <span className="rounded bg-zinc-800 px-2 py-1 text-zinc-400">
+        </Badge>
+        <Badge size="sm" variant="outline" color="gray">
           Significance: {divergence.significance}
-        </span>
-      </div>
-      <div className="mt-4 grid grid-cols-2 gap-4 text-sm overflow-hidden">
-        <div className="min-w-0">
-          <span className="text-xs font-semibold uppercase text-red-400">
+        </Badge>
+      </Group>
+      <SimpleGrid cols={2} mt="md" spacing="md">
+        <Box>
+          <Text size="xs" fw={600} tt="uppercase" c="red">
             Failing step
-          </span>
-          <p className="mt-1 font-mono text-xs text-zinc-300 truncate">
+          </Text>
+          <Code block style={{ fontSize: "var(--mantine-font-size-xs)" }}>
             {divergence.failingStep?.title ?? "—"}
-          </p>
-        </div>
-        <div className="min-w-0">
-          <span className="text-xs font-semibold uppercase text-emerald-400">
+          </Code>
+        </Box>
+        <Box>
+          <Text size="xs" fw={600} tt="uppercase" c="green">
             Passing step
-          </span>
-          <p className="mt-1 font-mono text-xs text-zinc-300 truncate">
+          </Text>
+          <Code block style={{ fontSize: "var(--mantine-font-size-xs)" }}>
             {divergence.passingStep?.title ?? "—"}
-          </p>
-        </div>
-      </div>
-    </section>
+          </Code>
+        </Box>
+      </SimpleGrid>
+    </Alert>
   );
 }
 
@@ -904,7 +903,6 @@ function EvidenceCard({
   artifacts: Artifact[];
   sessionId: string;
 }) {
-  // Filter out error_message items — shown separately in per-attempt error block
   const items = evidence.filter((e) => e.type !== "error_message");
   const screenshots = artifacts.filter(
     (a) => a.type === "screenshot" && a.contentType.startsWith("image/")
@@ -916,92 +914,96 @@ function EvidenceCard({
   if (items.length === 0 && screenshots.length === 0 && videos.length === 0) return null;
 
   return (
-    <section className="rounded-lg bg-zinc-900 p-6">
-      <h4 className="text-sm font-semibold uppercase tracking-wider text-zinc-500">
+    <Paper p="lg" radius="md" bg="dark.6">
+      <Text size="xs" fw={600} tt="uppercase" c="dimmed">
         Evidence
-      </h4>
+      </Text>
       {items.length > 0 && (
-        <ul className="mt-3 flex flex-col gap-2">
+        <List spacing="xs" mt="sm" size="sm">
           {items.map((e, i) => (
-            <li key={i} className="flex items-start gap-3 text-sm">
-              <EvidenceIcon type={e.type} />
-              <span className="text-zinc-300">{e.description}</span>
-            </li>
+            <List.Item
+              key={i}
+              icon={<EvidenceIcon type={e.type} />}
+            >
+              {e.description}
+            </List.Item>
           ))}
-        </ul>
+        </List>
       )}
       {screenshots.length > 0 && (
-        <div className="mt-4">
-          <h5 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-3">
+        <Box mt="md">
+          <Text size="xs" fw={600} tt="uppercase" c="dimmed" mb="sm">
             Screenshots
-          </h5>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          </Text>
+          <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
             {screenshots.map((s, i) => (
-              <div key={i} className="overflow-hidden rounded-md border border-zinc-800">
-                <img
-                  src={`/api/artifacts/${sessionId}?path=${encodeURIComponent(s.path)}`}
-                  alt={s.name}
-                  className="w-full cursor-pointer hover:opacity-90 transition-opacity"
-                  loading="lazy"
-                  onClick={() => window.open(`/api/artifacts/${sessionId}?path=${encodeURIComponent(s.path)}`, "_blank")}
-                />
-                <div className="bg-zinc-800 px-3 py-1.5 text-xs text-zinc-400 truncate">
+              <Card key={i} padding={0} radius="sm" withBorder>
+                <Card.Section>
+                  <Image
+                    src={`/api/artifacts/${sessionId}?path=${encodeURIComponent(s.path)}`}
+                    alt={s.name}
+                    style={{ cursor: "pointer" }}
+                    onClick={() => window.open(`/api/artifacts/${sessionId}?path=${encodeURIComponent(s.path)}`, "_blank")}
+                  />
+                </Card.Section>
+                <Text size="xs" c="dimmed" p="xs" truncate="end">
                   {s.name}
-                </div>
-              </div>
+                </Text>
+              </Card>
             ))}
-          </div>
-        </div>
+          </SimpleGrid>
+        </Box>
       )}
       {videos.length > 0 && (
-        <div className="mt-4">
-          <h5 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-3">
+        <Box mt="md">
+          <Text size="xs" fw={600} tt="uppercase" c="dimmed" mb="sm">
             Videos
-          </h5>
-          <div className="flex flex-col gap-4">
+          </Text>
+          <Stack gap="md">
             {videos.map((v, i) => (
-              <div key={i} className="overflow-hidden rounded-md border border-zinc-800">
-                <video
-                  src={`/api/artifacts/${sessionId}?path=${encodeURIComponent(v.path)}`}
-                  controls
-                  className="w-full"
-                />
-                <div className="bg-zinc-800 px-3 py-1.5 text-xs text-zinc-400 truncate">
+              <Card key={i} padding={0} radius="sm" withBorder>
+                <Card.Section>
+                  <video
+                    src={`/api/artifacts/${sessionId}?path=${encodeURIComponent(v.path)}`}
+                    controls
+                    style={{ width: "100%", display: "block" }}
+                  />
+                </Card.Section>
+                <Text size="xs" c="dimmed" p="xs" truncate="end">
                   {v.name}
-                </div>
-              </div>
+                </Text>
+              </Card>
             ))}
-          </div>
-        </div>
+          </Stack>
+        </Box>
       )}
-    </section>
+    </Paper>
   );
 }
 
 function ErrorBlock({ message, stack }: { message: string; stack?: string }) {
-  // Strip ANSI escape codes
   const clean = message.replace(/\[\d+m/g, "");
   const cleanStack = stack?.replace(/\[\d+m/g, "") ?? "";
 
-  // Split message into headline and detail
   const lines = clean.split("\n");
   const headline = lines[0] ?? "";
   const messageDetail = lines.slice(1).join("\n").trim();
 
-  // Use stack if available and different from message, otherwise fall back to message detail
   const detail = cleanStack && cleanStack !== clean ? cleanStack : messageDetail;
 
   return (
-    <div className="mt-3">
-      <div className="rounded-t-md bg-red-950/40 px-4 py-2 text-sm font-medium text-red-300 break-words">
-        {headline}
-      </div>
+    <Box mt="sm">
+      <Paper p="sm" radius="sm" bg="red.9" style={{ borderBottomLeftRadius: detail ? 0 : undefined, borderBottomRightRadius: detail ? 0 : undefined }}>
+        <Text size="sm" fw={500} c="red.2" style={{ wordBreak: "break-word" }}>
+          {headline}
+        </Text>
+      </Paper>
       {detail && (
-        <pre className="max-h-64 overflow-auto rounded-b-md bg-zinc-950 px-4 py-3 font-mono text-xs leading-relaxed text-zinc-400 whitespace-pre-wrap">
+        <Code block style={{ borderTopLeftRadius: 0, borderTopRightRadius: 0, maxHeight: 256, overflow: "auto", whiteSpace: "pre-wrap", fontSize: "var(--mantine-font-size-xs)" }}>
           {detail}
-        </pre>
+        </Code>
       )}
-    </div>
+    </Box>
   );
 }
 
@@ -1024,99 +1026,72 @@ function AttemptSteps({
 
   if (steps.length === 0 && passSteps.length === 0) return null;
 
-  // Single report: show steps with pass/fail status
   if (!hasPassingRun || passSteps.length === 0) {
     return (
-      <section className="rounded-lg bg-zinc-900 p-6">
-        <h4 className="text-sm font-semibold uppercase tracking-wider text-zinc-500">
+      <Paper p="lg" radius="md" bg="dark.6">
+        <Text size="xs" fw={600} tt="uppercase" c="dimmed">
           Test steps{compare.match.failingTest.results.length > 1 ? ` — attempt ${attemptIdx + 1}` : ""}
-        </h4>
-        <div className="mt-4 overflow-hidden">
-          <table className="w-full table-fixed text-left text-xs">
-            <colgroup>
-              <col className="w-8" />
-              <col className="w-16" />
-              <col />
-              <col className="w-16" />
-            </colgroup>
-            <thead>
-              <tr className="border-b border-zinc-800 text-xs uppercase text-zinc-500">
-                <th className="px-2 py-2">#</th>
-                <th className="px-2 py-2">Status</th>
-                <th className="px-2 py-2">Step</th>
-                <th className="px-2 py-2">Duration</th>
-              </tr>
-            </thead>
-            <tbody>
-              {steps.map((step, i) => {
-                const hasError = !!step.error;
-                return (
-                  <tr
-                    key={i}
-                    className={`border-b border-zinc-800/50 ${
-                      hasError ? "bg-red-950/20" : ""
-                    }`}
-                  >
-                    <td className="px-2 py-1.5 text-zinc-600">{i}</td>
-                    <td className="px-2 py-1.5">
-                      <span
-                        className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
-                          hasError
-                            ? "bg-red-900/40 text-red-300"
-                            : "bg-emerald-900/40 text-emerald-300"
-                        }`}
-                      >
-                        {hasError ? "fail" : "pass"}
-                      </span>
-                    </td>
-                    <td className="px-2 py-1.5 text-zinc-300 truncate">
-                      {step.title}
-                      {step.error?.message && (
-                        <div className="mt-1 text-xs text-red-400 truncate">
-                          {step.error.message.slice(0, 80)}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-2 py-1.5 text-zinc-500">
-                      {step.duration}ms
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </section>
+        </Text>
+        <Table mt="md" fz="xs" horizontalSpacing="xs" verticalSpacing={6}>
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th w={40}>#</Table.Th>
+              <Table.Th w={64}>Status</Table.Th>
+              <Table.Th>Step</Table.Th>
+              <Table.Th w={72}>Duration</Table.Th>
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
+            {steps.map((step, i) => {
+              const hasError = !!step.error;
+              return (
+                <Table.Tr
+                  key={i}
+                  bg={hasError ? "rgba(220, 38, 38, 0.1)" : undefined}
+                >
+                  <Table.Td c="dimmed">{i}</Table.Td>
+                  <Table.Td>
+                    <Badge size="xs" color={hasError ? "red" : "green"} variant="light">
+                      {hasError ? "fail" : "pass"}
+                    </Badge>
+                  </Table.Td>
+                  <Table.Td>
+                    <Text size="xs" truncate="end">{step.title}</Text>
+                    {step.error?.message && (
+                      <Text size="xs" c="red" truncate="end" mt={2}>
+                        {step.error.message.slice(0, 80)}
+                      </Text>
+                    )}
+                  </Table.Td>
+                  <Table.Td c="dimmed">{step.duration}ms</Table.Td>
+                </Table.Tr>
+              );
+            })}
+          </Table.Tbody>
+        </Table>
+      </Paper>
     );
   }
 
-  // Two reports: side-by-side comparison
   const maxLen = Math.max(steps.length, passSteps.length);
 
   return (
-    <section className="rounded-lg bg-zinc-900 p-6">
-      <h4 className="text-sm font-semibold uppercase tracking-wider text-zinc-500">
+    <Paper p="lg" radius="md" bg="dark.6">
+      <Text size="xs" fw={600} tt="uppercase" c="dimmed">
         Step-by-step comparison{compare.match.failingTest.results.length > 1 ? ` — attempt ${attemptIdx + 1}` : ""}
-      </h4>
-      <div className="mt-4 overflow-hidden">
-        <table className="w-full table-fixed text-left text-xs">
-          <colgroup>
-            <col className="w-8" />
-            <col />
-            <col className="w-14" />
-            <col />
-            <col className="w-14" />
-          </colgroup>
-          <thead>
-            <tr className="border-b border-zinc-800 text-xs uppercase text-zinc-500">
-              <th className="px-2 py-2">#</th>
-              <th className="px-2 py-2 text-red-400">Failing</th>
-              <th className="px-2 py-2 text-red-400">ms</th>
-              <th className="px-2 py-2 text-emerald-400">Passing</th>
-              <th className="px-2 py-2 text-emerald-400">ms</th>
-            </tr>
-          </thead>
-          <tbody>
+      </Text>
+      <Box mt="md" style={{ overflow: "auto" }}>
+        <Table fz="xs" horizontalSpacing="xs" verticalSpacing={6}>
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th w={40}>#</Table.Th>
+              <Table.Th c="red">Failing</Table.Th>
+              <Table.Th w={56} c="red">ms</Table.Th>
+              <Table.Th c="green">Passing</Table.Th>
+              <Table.Th w={56} c="green">ms</Table.Th>
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
             {Array.from({ length: maxLen }, (_, i) => {
               const fs = steps[i];
               const ps = passSteps[i];
@@ -1127,37 +1102,37 @@ function AttemptSteps({
                 (fs?.error && !ps?.error);
 
               return (
-                <tr
+                <Table.Tr
                   key={i}
-                  className={`border-b border-zinc-800/50 ${
-                    isDivergent ? "bg-amber-950/20" : ""
-                  }`}
+                  bg={isDivergent ? "rgba(217, 119, 6, 0.1)" : undefined}
                 >
-                  <td className="px-2 py-1.5 text-zinc-600">{i}</td>
-                  <td className="px-2 py-1.5 text-zinc-300 truncate">
-                    {fs?.title ?? "—"}
-                    {fs?.error?.message && (
-                      <span className="ml-1 text-red-400">
-                        {fs.error.message.slice(0, 40)}
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-2 py-1.5 text-zinc-500">
+                  <Table.Td c="dimmed">{i}</Table.Td>
+                  <Table.Td>
+                    <Text size="xs" truncate="end">
+                      {fs?.title ?? "—"}
+                      {fs?.error?.message && (
+                        <Text span size="xs" c="red" ml={4}>
+                          {fs.error.message.slice(0, 40)}
+                        </Text>
+                      )}
+                    </Text>
+                  </Table.Td>
+                  <Table.Td c="dimmed">
                     {fs?.duration ?? "—"}
-                  </td>
-                  <td className="px-2 py-1.5 text-zinc-300 truncate">
-                    {ps?.title ?? "—"}
-                  </td>
-                  <td className="px-2 py-1.5 text-zinc-500">
+                  </Table.Td>
+                  <Table.Td>
+                    <Text size="xs" truncate="end">{ps?.title ?? "—"}</Text>
+                  </Table.Td>
+                  <Table.Td c="dimmed">
                     {ps?.duration ?? "—"}
-                  </td>
-                </tr>
+                  </Table.Td>
+                </Table.Tr>
               );
             })}
-          </tbody>
-        </table>
-      </div>
-    </section>
+          </Table.Tbody>
+        </Table>
+      </Box>
+    </Paper>
   );
 }
 
@@ -1194,144 +1169,132 @@ function NetworkRequestsPanel({
   }, [requests, urlFilter, statusFilter]);
 
   return (
-    <section className="rounded-lg border border-orange-800/30 bg-orange-950/10 p-6">
-      <h4 className="text-sm font-semibold uppercase tracking-wider text-orange-400">
-        Non-2xx network requests{attemptLabel ? ` — attempt ${attemptLabel}` : ""} ({filtered.length}/{requests.length})
-      </h4>
-
+    <Alert variant="light" color="orange" radius="md" p="lg" title={
+      `Non-2xx network requests${attemptLabel ? ` — attempt ${attemptLabel}` : ""} (${filtered.length}/${requests.length})`
+    }>
       {/* Filters */}
-      <div className="mt-3 flex items-center gap-3 flex-wrap">
-        <input
-          type="text"
+      <Group mt="sm" gap="sm" wrap="wrap">
+        <TextInput
           placeholder="Filter by URL..."
           value={urlFilter}
-          onChange={(e) => setUrlFilter(e.target.value)}
-          className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs text-zinc-200 placeholder-zinc-500 focus:border-orange-500 focus:outline-none flex-1 min-w-[150px] max-w-[300px]"
+          onChange={(e) => setUrlFilter(e.currentTarget.value)}
+          size="xs"
+          style={{ flex: 1, minWidth: 150, maxWidth: 300 }}
         />
-        <div className="flex gap-1">
-          {STATUS_FILTERS.map((f) => (
-            <button
-              key={f.value}
-              onClick={() => setStatusFilter(statusFilter === f.value ? "all" : f.value)}
-              className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
-                statusFilter === f.value
-                  ? "bg-orange-700 text-white"
-                  : "bg-zinc-800 text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              {f.label}
-            </button>
-          ))}
-        </div>
-      </div>
+        <SegmentedControl
+          size="xs"
+          value={statusFilter}
+          onChange={setStatusFilter}
+          data={STATUS_FILTERS.map((f) => ({ label: f.label, value: f.value }))}
+        />
+      </Group>
 
       {/* Request list */}
-      <div className="mt-3 flex flex-col gap-1">
+      <Stack gap={4} mt="sm">
         {filtered.map((r, i) => (
-          <div key={i} className="rounded-md bg-zinc-900 overflow-hidden">
-            <button
+          <Paper key={i} radius="sm" bg="dark.6" style={{ overflow: "hidden" }}>
+            <UnstyledButton
               onClick={() => setExpandedIdx(expandedIdx === i ? null : i)}
-              className="w-full px-4 py-2.5 text-left hover:bg-zinc-800/50 transition-colors"
+              w="100%"
+              p="xs"
             >
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2 min-w-0 overflow-hidden">
-                  <span className="shrink-0 rounded bg-zinc-800 px-1.5 py-0.5 text-xs font-mono text-zinc-400">
-                    {r.method}
-                  </span>
-                  <span className="font-mono text-xs text-zinc-200 truncate">{r.url}</span>
-                </div>
-                <div className="flex items-center gap-3 shrink-0">
+              <Group justify="space-between" gap="sm" wrap="nowrap">
+                <Group gap="xs" wrap="nowrap" style={{ minWidth: 0, overflow: "hidden" }}>
+                  <Code>{r.method}</Code>
+                  <Text size="xs" ff="monospace" truncate="end">{r.url}</Text>
+                </Group>
+                <Group gap="sm" wrap="nowrap" style={{ flexShrink: 0 }}>
                   <StatusBadge status={r.status} />
-                  <span className="text-xs text-zinc-500 w-12 text-right">{r.duration}ms</span>
-                  <span className="text-zinc-600 text-xs">{expandedIdx === i ? "▲" : "▼"}</span>
-                </div>
-              </div>
-            </button>
+                  <Text size="xs" c="dimmed" w={48} ta="right">{r.duration}ms</Text>
+                  <Text size="xs" c="dimmed">{expandedIdx === i ? "\u25B2" : "\u25BC"}</Text>
+                </Group>
+              </Group>
+            </UnstyledButton>
 
-            {expandedIdx === i && (
-              <div className="border-t border-zinc-800 px-4 py-3 text-xs">
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <Collapse in={expandedIdx === i}>
+              <Box p="sm" style={{ borderTop: "1px solid var(--mantine-color-dark-4)" }}>
+                <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="md">
                   {/* Request side */}
-                  <div className="min-w-0">
-                    <h5 className="font-semibold text-zinc-400 uppercase tracking-wider mb-2">Request</h5>
+                  <Box>
+                    <Text size="xs" fw={600} tt="uppercase" c="dimmed" mb="xs">Request</Text>
                     {r.requestContentType && (
-                      <div className="text-zinc-500 mb-1">Content-Type: {r.requestContentType}</div>
+                      <Text size="xs" c="dimmed" mb={4}>Content-Type: {r.requestContentType}</Text>
                     )}
                     {r.requestHeaders && r.requestHeaders.length > 0 && (
-                      <details className="mb-2">
-                        <summary className="cursor-pointer text-zinc-500 hover:text-zinc-300">
+                      <details style={{ marginBottom: 8 }}>
+                        <summary style={{ cursor: "pointer", fontSize: "var(--mantine-font-size-xs)", color: "var(--mantine-color-dimmed)" }}>
                           Headers ({r.requestHeaders.length})
                         </summary>
-                        <pre className="mt-1 max-h-40 overflow-auto rounded bg-zinc-950 p-2 text-zinc-400 whitespace-pre-wrap break-all">
+                        <Code block mt={4} style={{ maxHeight: 160, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
                           {r.requestHeaders.map((h) => `${h.name}: ${h.value}`).join("\n")}
-                        </pre>
+                        </Code>
                       </details>
                     )}
                     {r.requestBody ? (
-                      <div>
-                        <div className="text-zinc-500 mb-1">Body:</div>
-                        <pre className="max-h-48 overflow-auto rounded bg-zinc-950 p-2 text-zinc-300 whitespace-pre-wrap break-all">
+                      <Box>
+                        <Text size="xs" c="dimmed" mb={4}>Body:</Text>
+                        <Code block style={{ maxHeight: 192, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
                           {formatBody(r.requestBody, r.requestContentType)}
-                        </pre>
-                      </div>
+                        </Code>
+                      </Box>
                     ) : (
-                      <div className="text-zinc-600 italic">No request body</div>
+                      <Text size="xs" c="dimmed" fs="italic">No request body</Text>
                     )}
-                  </div>
+                  </Box>
 
                   {/* Response side */}
-                  <div className="min-w-0">
-                    <h5 className="font-semibold text-zinc-400 uppercase tracking-wider mb-2">
+                  <Box>
+                    <Text size="xs" fw={600} tt="uppercase" c="dimmed" mb="xs">
                       Response — {r.status <= 0 ? "Failed" : r.status} {r.statusText}
-                    </h5>
+                    </Text>
                     {r.responseContentType && (
-                      <div className="text-zinc-500 mb-1">Content-Type: {r.responseContentType}</div>
+                      <Text size="xs" c="dimmed" mb={4}>Content-Type: {r.responseContentType}</Text>
                     )}
                     {r.responseHeaders && r.responseHeaders.length > 0 && (
-                      <details className="mb-2">
-                        <summary className="cursor-pointer text-zinc-500 hover:text-zinc-300">
+                      <details style={{ marginBottom: 8 }}>
+                        <summary style={{ cursor: "pointer", fontSize: "var(--mantine-font-size-xs)", color: "var(--mantine-color-dimmed)" }}>
                           Headers ({r.responseHeaders.length})
                         </summary>
-                        <pre className="mt-1 max-h-40 overflow-auto rounded bg-zinc-950 p-2 text-zinc-400 whitespace-pre-wrap break-all">
+                        <Code block mt={4} style={{ maxHeight: 160, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
                           {r.responseHeaders.map((h) => `${h.name}: ${h.value}`).join("\n")}
-                        </pre>
+                        </Code>
                       </details>
                     )}
                     {r.responseBody ? (
-                      <div>
-                        <div className="text-zinc-500 mb-1">Body:</div>
-                        <pre className="max-h-48 overflow-auto rounded bg-zinc-950 p-2 text-zinc-300 whitespace-pre-wrap break-all">
+                      <Box>
+                        <Text size="xs" c="dimmed" mb={4}>Body:</Text>
+                        <Code block style={{ maxHeight: 192, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
                           {formatBody(r.responseBody, r.responseContentType)}
-                        </pre>
-                      </div>
+                        </Code>
+                      </Box>
                     ) : (
-                      <div className="text-zinc-600 italic">No response body</div>
+                      <Text size="xs" c="dimmed" fs="italic">No response body</Text>
                     )}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+                  </Box>
+                </SimpleGrid>
+              </Box>
+            </Collapse>
+          </Paper>
         ))}
         {filtered.length === 0 && (
-          <div className="text-zinc-600 text-xs py-2">No requests match filters.</div>
+          <Text size="xs" c="dimmed" py="xs">No requests match filters.</Text>
         )}
-      </div>
-    </section>
+      </Stack>
+    </Alert>
   );
 }
 
 function StatusBadge({ status }: { status: number }) {
-  const cls =
-    status >= 500 ? "bg-red-900/50 text-red-300" :
-    status >= 400 ? "bg-orange-900/50 text-orange-300" :
-    status >= 300 ? "bg-yellow-900/50 text-yellow-300" :
-    status <= 0 ? "bg-red-900/50 text-red-300" :
-    "bg-zinc-800 text-zinc-400";
+  const color =
+    status >= 500 ? "red" :
+    status >= 400 ? "orange" :
+    status >= 300 ? "yellow" :
+    status <= 0 ? "red" :
+    "gray";
   return (
-    <span className={`rounded px-1.5 py-0.5 text-xs font-bold ${cls}`}>
+    <Badge size="sm" variant="light" color={color} fw={700}>
       {status <= 0 ? "ERR" : status}
-    </span>
+    </Badge>
   );
 }
 
@@ -1355,107 +1318,107 @@ const AI_CATEGORY_LABELS: Record<string, string> = {
 };
 
 const AI_CATEGORY_COLORS: Record<string, string> = {
-  app_regression: "bg-red-900/40 text-red-300",
-  ui_change_or_outdated_test: "bg-amber-900/40 text-amber-300",
-  timing_or_flake: "bg-yellow-900/40 text-yellow-300",
-  environment_issue: "bg-blue-900/40 text-blue-300",
-  unknown: "bg-zinc-800 text-zinc-400",
+  app_regression: "red",
+  ui_change_or_outdated_test: "yellow",
+  timing_or_flake: "orange",
+  environment_issue: "blue",
+  unknown: "gray",
 };
 
 function AiTriageResultCard({ result }: { result: AiTriageResult }) {
   return (
-    <div className="mt-4 rounded-md bg-violet-950/20 border border-violet-800/30 px-4 py-4 text-sm">
+    <Paper p="md" radius="sm" mt="md" withBorder style={{ borderColor: "var(--mantine-color-violet-9)" }}>
       {/* Category + confidence */}
-      <div className="flex items-center gap-3 mb-3">
-        <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${AI_CATEGORY_COLORS[result.category] ?? AI_CATEGORY_COLORS.unknown}`}>
+      <Group gap="sm" mb="sm">
+        <Badge
+          size="sm"
+          variant="light"
+          color={AI_CATEGORY_COLORS[result.category] ?? "gray"}
+        >
           {AI_CATEGORY_LABELS[result.category] ?? result.category}
-        </span>
-        <span className={`text-xs ${
-          result.confidence === "high" ? "text-emerald-400" :
-          result.confidence === "medium" ? "text-yellow-400" :
-          "text-zinc-500"
-        }`}>
+        </Badge>
+        <Text
+          size="xs"
+          c={
+            result.confidence === "high" ? "green" :
+            result.confidence === "medium" ? "yellow" :
+            "dimmed"
+          }
+        >
           {result.confidence} confidence
-        </span>
-      </div>
+        </Text>
+      </Group>
 
       {/* Diagnosis */}
-      <p className="leading-relaxed text-zinc-300">{result.diagnosis}</p>
+      <Text size="sm">{result.diagnosis}</Text>
 
       {/* Evidence */}
       {result.primaryEvidence.length > 0 && (
-        <div className="mt-3">
-          <h5 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1">Evidence</h5>
-          <ul className="flex flex-col gap-1">
+        <Box mt="sm">
+          <Text size="xs" fw={600} tt="uppercase" c="dimmed" mb={4}>Evidence</Text>
+          <List spacing={4} size="xs">
             {result.primaryEvidence.map((e: string, i: number) => (
-              <li key={i} className="text-xs text-zinc-400 flex items-start gap-2">
-                <span className="text-emerald-600 mt-0.5 shrink-0">+</span>
-                <span>{e}</span>
-              </li>
+              <List.Item key={i} icon={<Text size="xs" c="green" fw={700}>+</Text>}>
+                <Text size="xs" c="dimmed">{e}</Text>
+              </List.Item>
             ))}
-          </ul>
-        </div>
+          </List>
+        </Box>
       )}
 
       {/* Counter-evidence */}
       {result.counterEvidence.length > 0 && (
-        <div className="mt-3">
-          <h5 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1">Counter-evidence</h5>
-          <ul className="flex flex-col gap-1">
+        <Box mt="sm">
+          <Text size="xs" fw={600} tt="uppercase" c="dimmed" mb={4}>Counter-evidence</Text>
+          <List spacing={4} size="xs">
             {result.counterEvidence.map((e: string, i: number) => (
-              <li key={i} className="text-xs text-zinc-500 flex items-start gap-2">
-                <span className="text-zinc-600 mt-0.5 shrink-0">-</span>
-                <span>{e}</span>
-              </li>
+              <List.Item key={i} icon={<Text size="xs" c="dimmed" fw={700}>-</Text>}>
+                <Text size="xs" c="dimmed">{e}</Text>
+              </List.Item>
             ))}
-          </ul>
-        </div>
+          </List>
+        </Box>
       )}
 
       {/* Suggested next step */}
-      <div className="mt-3 rounded bg-zinc-800/50 px-3 py-2 text-xs text-zinc-300">
-        <span className="font-medium text-zinc-100">Next step: </span>
-        {result.suggestedNextStep}
-      </div>
-    </div>
+      <Paper p="xs" radius="sm" mt="sm" bg="dark.5">
+        <Text size="xs">
+          <Text span fw={500}>Next step: </Text>
+          {result.suggestedNextStep}
+        </Text>
+      </Paper>
+    </Paper>
   );
 }
 
 // ---- Small UI components ----
 
-function CategoryBadge({
-  category,
-}: {
-  category: string;
-}) {
+function CategoryBadge({ category }: { category: string }) {
   const colors: Record<string, string> = {
-    app_regression: "bg-red-900/40 text-red-300",
-    flaky_timing: "bg-yellow-900/40 text-yellow-300",
-    environment_issue: "bg-blue-900/40 text-blue-300",
-    test_bug: "bg-purple-900/40 text-purple-300",
-    unknown: "bg-zinc-800 text-zinc-400",
+    app_regression: "red",
+    flaky_timing: "yellow",
+    environment_issue: "blue",
+    test_bug: "violet",
+    unknown: "gray",
   };
 
   return (
-    <span
-      className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${colors[category] ?? colors.unknown}`}
-    >
+    <Badge size="sm" variant="light" color={colors[category] ?? "gray"}>
       {category.replace(/_/g, " ")}
-    </span>
+    </Badge>
   );
 }
 
 function ConfidenceBadge({ confidence }: { confidence: string }) {
-  const colors: Record<string, string> = {
-    high: "text-emerald-400",
-    medium: "text-yellow-400",
-    low: "text-zinc-500",
-  };
+  const color =
+    confidence === "high" ? "green" :
+    confidence === "medium" ? "yellow" :
+    "gray";
 
   return (
-    <span className={`text-xs ${colors[confidence] ?? "text-zinc-500"}`}>
+    <Text size="xs" c={color}>
       {confidence} confidence
-    </span>
+    </Text>
   );
 }
 
@@ -1471,8 +1434,8 @@ function EvidenceIcon({ type }: { type: string }) {
   };
 
   return (
-    <span className="flex h-6 w-8 shrink-0 items-center justify-center rounded bg-zinc-800 text-[10px] font-bold uppercase text-zinc-500">
+    <Badge size="sm" variant="filled" color="dark.5" fw={700} tt="uppercase" style={{ fontSize: 10 }}>
       {icons[type] ?? "?"}
-    </span>
+    </Badge>
   );
 }

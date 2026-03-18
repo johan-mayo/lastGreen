@@ -1,7 +1,9 @@
 "use client";
 
-import { useState, useCallback, type DragEvent, type ChangeEvent } from "react";
+import { useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import { Stack, Button, Alert, Text, Group } from "@mantine/core";
+import { Dropzone } from "@mantine/dropzone";
 
 export function UploadForm() {
   const router = useRouter();
@@ -42,7 +44,7 @@ export function UploadForm() {
   };
 
   return (
-    <div className="flex w-full max-w-2xl flex-col gap-6">
+    <Stack w="100%" maw={640} gap="md">
       <DropZone
         label="Failing report"
         sublabel="Required — JSON, HTML report, or zipped playwright-report/"
@@ -58,19 +60,22 @@ export function UploadForm() {
       />
 
       {error && (
-        <p className="rounded-md bg-red-900/30 px-4 py-2 text-sm text-red-400">
+        <Alert color="red" variant="light">
           {error}
-        </p>
+        </Alert>
       )}
 
-      <button
+      <Button
         onClick={handleSubmit}
-        disabled={!failingFile || loading}
-        className="rounded-lg bg-emerald-600 px-6 py-3 font-medium text-white transition-colors hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
+        disabled={!failingFile}
+        loading={loading}
+        color="green"
+        size="lg"
+        fullWidth
       >
-        {loading ? "Processing..." : "Analyze"}
-      </button>
-    </div>
+        Analyze
+      </Button>
+    </Stack>
   );
 }
 
@@ -87,60 +92,49 @@ function DropZone({
   onFile: (f: File | null) => void;
   required?: boolean;
 }) {
-  const [dragOver, setDragOver] = useState(false);
-
   const handleDrop = useCallback(
-    (e: DragEvent) => {
-      e.preventDefault();
-      setDragOver(false);
-      const dropped = e.dataTransfer.files[0];
-      if (dropped) onFile(dropped);
-    },
-    [onFile]
-  );
-
-  const handleChange = useCallback(
-    (e: ChangeEvent<HTMLInputElement>) => {
-      const selected = e.target.files?.[0];
-      if (selected) onFile(selected);
+    (files: File[]) => {
+      if (files[0]) onFile(files[0]);
     },
     [onFile]
   );
 
   return (
-    <label
-      onDragOver={(e) => {
-        e.preventDefault();
-        setDragOver(true);
-      }}
-      onDragLeave={() => setDragOver(false)}
+    <Dropzone
       onDrop={handleDrop}
-      className={`flex cursor-pointer flex-col items-center gap-2 rounded-xl border-2 border-dashed px-6 py-10 text-center transition-colors ${
-        dragOver
-          ? "border-emerald-500 bg-emerald-500/10"
-          : "border-zinc-700 bg-zinc-900 hover:border-zinc-500"
-      }`}
+      accept={[
+        "application/json",
+        "text/html",
+        "application/zip",
+        "application/x-zip-compressed",
+      ]}
+      multiple={false}
+      p="xl"
+      style={{ cursor: "pointer" }}
     >
-      <span className="text-base font-medium">
-        {label}
-        {required && <span className="ml-1 text-red-400">*</span>}
-      </span>
-      <span className="text-sm text-zinc-500">{sublabel}</span>
+      <Stack align="center" gap={4}>
+        <Group gap={4}>
+          <Text fw={500}>{label}</Text>
+          {required && (
+            <Text c="red" span>
+              *
+            </Text>
+          )}
+        </Group>
+        <Text size="sm" c="dimmed">
+          {sublabel}
+        </Text>
 
-      {file ? (
-        <span className="mt-2 text-sm text-emerald-400">{file.name}</span>
-      ) : (
-        <span className="mt-2 text-sm text-zinc-600">
-          Drop a file here or click to browse
-        </span>
-      )}
-
-      <input
-        type="file"
-        accept=".json,.html,.htm,.zip"
-        onChange={handleChange}
-        className="hidden"
-      />
-    </label>
+        {file ? (
+          <Text size="sm" c="green" mt="xs">
+            {file.name}
+          </Text>
+        ) : (
+          <Text size="sm" c="dimmed" mt="xs">
+            Drop a file here or click to browse
+          </Text>
+        )}
+      </Stack>
+    </Dropzone>
   );
 }

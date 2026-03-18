@@ -1,16 +1,15 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import {
+  MantineProvider,
+  ColorSchemeScript,
+  Anchor,
+  Text,
+  Group,
+  Box,
+  Container,
+} from "@mantine/core";
+import { theme } from "./theme";
 import "./globals.css";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
 
 export const metadata: Metadata = {
   title: "lastGreen — Playwright Failure Diff & Triage",
@@ -24,19 +23,32 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased bg-zinc-950 text-zinc-100`}
-      >
-        <nav className="border-b border-zinc-800 px-6 py-4">
-          <a href="/" className="text-lg font-semibold tracking-tight">
-            lastGreen
-          </a>
-          <span className="ml-3 text-sm text-zinc-500">
-            Playwright failure diff & triage
-          </span>
-        </nav>
-        <main className="mx-auto max-w-7xl px-6 py-8">{children}</main>
+    <html lang="en" data-mantine-color-scheme="dark">
+      <head>
+        <ColorSchemeScript defaultColorScheme="dark" />
+      </head>
+      <body>
+        <MantineProvider theme={theme} defaultColorScheme="dark">
+          <Box
+            component="nav"
+            px="md"
+            py="sm"
+            style={{ borderBottom: "1px solid var(--mantine-color-dark-4)" }}
+          >
+            <Group>
+              <Anchor href="/" underline="never" c="white" fw={600} fz="lg">
+                lastGreen
+              </Anchor>
+              <Text size="sm" c="dimmed">
+                Playwright failure diff &amp; triage
+              </Text>
+            </Group>
+          </Box>
+
+          <Container size="xl" py="lg">
+            {children}
+          </Container>
+        </MantineProvider>
       </body>
     </html>
   );
