@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo, useCallback } from "react";
+import { useEffect, useState, useMemo } from "react";
 import type { AnalysisResult } from "../../api/upload/route";
 import type {
   TriageSummary,
@@ -8,12 +8,9 @@ import type {
   NormalizedTestResult,
   NormalizedStep,
   Divergence,
-  EvidenceItem,
-  Artifact,
   NetworkRequest,
   ComparisonSummary,
   RequestDiff,
-  AiTriageResult,
 } from "@last-green/core";
 import type { CompareResult } from "@last-green/core";
 import {
@@ -21,47 +18,23 @@ import {
   Badge,
   Box,
   Button,
-  Card,
   Code,
-  Collapse,
   Grid,
   Group,
-  Image,
-  List,
   Paper,
-  SegmentedControl,
-  SimpleGrid,
   Stack,
-  Table,
   Text,
-  TextInput,
-  Title,
   Tooltip,
   UnstyledButton,
 } from "@mantine/core";
-import { CodeHighlight } from "@mantine/code-highlight";
 import { PassingPanel } from "./passing-panel";
 import { NetworkRequestsPanel } from "../../components/network-requests-panel";
-
-/** Try to parse a string as AiTriageResult JSON (handles markdown fences) */
-function tryParseTriageResult(text: string): AiTriageResult | null {
-  try {
-    const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
-    if (fenceMatch) {
-      const parsed = JSON.parse(fenceMatch[1]);
-      if (parsed.category && parsed.diagnosis) return parsed;
-    }
-    const firstBrace = text.indexOf("{");
-    const lastBrace = text.lastIndexOf("}");
-    if (firstBrace !== -1 && lastBrace > firstBrace) {
-      const parsed = JSON.parse(text.slice(firstBrace, lastBrace + 1));
-      if (parsed.category && parsed.diagnosis) return parsed;
-    }
-    const parsed = JSON.parse(text);
-    if (parsed.category && parsed.diagnosis) return parsed;
-  } catch { /* not valid JSON */ }
-  return null;
-}
+import { AccordionCard } from "./accordion-card";
+import { TriageCard, CategoryBadge, ConfidenceBadge } from "./triage-card";
+import { ErrorBlock } from "./error-card";
+import { EvidenceCard, hasEvidenceContent } from "./evidence-card";
+import { AiDiagnosisCard } from "./ai-diagnosis-card";
+import { TestStepsCard } from "./test-steps-card";
 
 /** Normalize step titles by replacing UUIDs/hashes with placeholders for comparison */
 function normalizeStepTitle(title: string): string {
@@ -393,7 +366,7 @@ export function ResultsView({ id }: { id: string }) {
       </Paper>
 
       {splitMode ? (
-        /* ── Split mode: narrow sidebar + 50/50 failing/passing ── */
+        /* -- Split mode: narrow sidebar + 50/50 failing/passing -- */
         <Box style={{ display: "flex", gap: 16 }}>
           {/* Collapsed sidebar */}
           <Box style={{ width: 64, flexShrink: 0 }}>
@@ -455,7 +428,7 @@ export function ResultsView({ id }: { id: string }) {
           </Box>
         </Box>
       ) : (
-        /* ── Normal mode: full sidebar + single detail panel ── */
+        /* -- Normal mode: full sidebar + single detail panel -- */
         <Grid>
           {/* Test list sidebar */}
           <Grid.Col span={{ base: 12, lg: 3 }}>
@@ -551,32 +524,6 @@ function DetailPanel({
   const [attemptIdx, setAttemptIdx] = useState(attempts.length - 1);
   const currentAttempt = attempts[attemptIdx];
 
-  // AI triage state
-  const [apiKey, setApiKey] = useState(() =>
-    typeof window !== "undefined" ? localStorage.getItem("lg-api-key") ?? "" : ""
-  );
-  const [showKeyInput, setShowKeyInput] = useState(false);
-  const [aiResults, setAiResults] = useState<Record<number, AiTriageResult>>({});
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiError, setAiError] = useState<string | null>(null);
-
-  type ConvoMessage = { role: "user" | "assistant"; content: string };
-  const storageKey = `lg-convo-${sessionId}-${testCase.id}`;
-
-  const [conversations, setConversations] = useState<Record<number, ConvoMessage[]>>(() => {
-    if (typeof window === "undefined") return {};
-    try {
-      const stored = sessionStorage.getItem(storageKey);
-      return stored ? JSON.parse(stored) : {};
-    } catch { return {}; }
-  });
-  const [followUpInput, setFollowUpInput] = useState("");
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    sessionStorage.setItem(storageKey, JSON.stringify(conversations));
-  }, [conversations, storageKey]);
-
   const failingRequests = useMemo(() => {
     const key = `${testCase.id}:${currentAttempt?.attempt ?? 0}`;
     const all = networkRequestsMap[key] ?? [];
@@ -625,80 +572,11 @@ function DetailPanel({
     );
   }, [testCase, currentAttempt, compare, passingRequests, attemptSummary, networkRequestsMap]);
 
-  const requestAiTriage = useCallback(async () => {
-    if (!apiKey.trim()) {
-      setShowKeyInput(true);
-      return;
-    }
-    localStorage.setItem("lg-api-key", apiKey);
-    setAiLoading(true);
-    setAiError(null);
-
-    const idx = attemptIdx;
-    try {
-      const res = await fetch("/api/ai-triage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey, comparison: comparisonSummary }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Request failed");
-      setAiResults((prev) => ({ ...prev, [idx]: data.result }));
-      setConversations((prev) => ({
-        ...prev,
-        [idx]: [{ role: "assistant" as const, content: data.rawResponse }],
-      }));
-    } catch (e) {
-      setAiError(e instanceof Error ? e.message : "AI triage failed");
-    } finally {
-      setAiLoading(false);
-    }
-  }, [apiKey, attemptIdx, comparisonSummary]);
-
-  const sendFollowUp = useCallback(async () => {
-    const text = followUpInput.trim();
-    if (!text || !apiKey.trim()) return;
-
-    const idx = attemptIdx;
-    const history = conversations[idx] ?? [];
-    const updatedHistory = [...history, { role: "user" as const, content: text }];
-
-    setConversations((prev) => ({ ...prev, [idx]: updatedHistory }));
-    setFollowUpInput("");
-    setAiLoading(true);
-    setAiError(null);
-
-    try {
-      const res = await fetch("/api/ai-triage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          apiKey,
-          comparison: comparisonSummary,
-          conversationHistory: updatedHistory,
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Request failed");
-      setConversations((prev) => ({
-        ...prev,
-        [idx]: [...updatedHistory, { role: "assistant" as const, content: data.rawResponse }],
-      }));
-      if (data.result) {
-        setAiResults((prev) => ({ ...prev, [idx]: data.result }));
-      }
-    } catch (e) {
-      setAiError(e instanceof Error ? e.message : "Follow-up failed");
-    } finally {
-      setAiLoading(false);
-    }
-  }, [apiKey, attemptIdx, followUpInput, conversations, comparisonSummary]);
-
   return (
     <Stack gap="md">
-      <TriageCard triage={triage} suggestedNextStep={attemptSummary.suggestedNextStep} />
+      <AccordionCard title="Triage Summary">
+        <TriageCard triage={triage} suggestedNextStep={attemptSummary.suggestedNextStep} />
+      </AccordionCard>
 
       {/* Attempt toggle */}
       {attempts.length > 1 && (
@@ -731,628 +609,51 @@ function DetailPanel({
         </Paper>
       )}
 
-      {/* Per-attempt failing step */}
-      {currentAttempt?.status !== "passed" && (
-        <DivergenceCard
-          divergence={attemptDivergence}
+      {/* Test steps + divergence */}
+      <AccordionCard title="Test Steps">
+        <TestStepsCard
+          divergence={currentAttempt?.status !== "passed" ? attemptDivergence : null}
+          attempt={currentAttempt}
+          compare={compare}
           hasPassingRun={hasPassingRun}
         />
-      )}
+      </AccordionCard>
 
-      {/* Per-attempt error */}
+      {/* Per-attempt error + AI diagnosis */}
       {currentAttempt?.error && (
-        <Paper p="lg" radius="md" bg="dark.6">
-          <Text size="xs" fw={600} tt="uppercase" c="dimmed">
-            Error{attempts.length > 1 ? ` — attempt ${attemptIdx + 1}` : ""}
-          </Text>
-          <ErrorBlock message={currentAttempt.error.message ?? ""} stack={currentAttempt.error.stack} />
-        </Paper>
+        <AccordionCard title="Error">
+          <Stack gap="md">
+            <ErrorBlock message={currentAttempt.error.message ?? ""} stack={currentAttempt.error.stack} />
+            <AiDiagnosisCard
+              comparisonSummary={comparisonSummary}
+              attemptIdx={attemptIdx}
+              sessionId={sessionId}
+              testCaseId={testCase.id}
+            />
+          </Stack>
+        </AccordionCard>
       )}
 
       {/* Non-2xx network requests for this attempt */}
       {failingRequests.length > 0 && (
-        <NetworkRequestsPanel
-          requests={failingRequests}
-          attemptLabel={attempts.length > 1 ? attemptIdx + 1 : undefined}
-        />
+        <AccordionCard title={`Network Requests (${failingRequests.length})`}>
+          <NetworkRequestsPanel
+            requests={failingRequests}
+            attemptLabel={attempts.length > 1 ? attemptIdx + 1 : undefined}
+          />
+        </AccordionCard>
       )}
 
-      <EvidenceCard
-        evidence={triage.evidence}
-        artifacts={currentAttempt?.artifacts ?? []}
-        sessionId={sessionId}
-      />
+      {hasEvidenceContent(triage.evidence, currentAttempt?.artifacts ?? []) && (
+        <AccordionCard title="Evidence">
+          <EvidenceCard
+            evidence={triage.evidence}
+            artifacts={currentAttempt?.artifacts ?? []}
+            sessionId={sessionId}
+          />
+        </AccordionCard>
+      )}
 
-      {/* AI Triage */}
-      <Paper p="lg" radius="md" bg="dark.6">
-        <Group justify="space-between" wrap="wrap" gap="sm">
-          <Text size="xs" fw={600} tt="uppercase" c="dimmed">
-            AI Diagnosis
-          </Text>
-          <Group gap="xs" wrap="wrap">
-            {showKeyInput && (
-              <TextInput
-                type="password"
-                placeholder="Anthropic API key"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.currentTarget.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && apiKey.trim()) {
-                    setShowKeyInput(false);
-                    requestAiTriage();
-                  }
-                }}
-                size="xs"
-                w={256}
-              />
-            )}
-            <Button
-              onClick={() => {
-                if (!apiKey.trim()) {
-                  setShowKeyInput(true);
-                } else {
-                  requestAiTriage();
-                }
-              }}
-              loading={aiLoading && !aiResults[attemptIdx]}
-              disabled={aiLoading}
-              size="xs"
-              color="violet"
-            >
-              {aiResults[attemptIdx] ? "Re-analyze" : "Diagnose with AI"}
-            </Button>
-            {apiKey && (
-              <Button
-                onClick={() => setShowKeyInput(!showKeyInput)}
-                size="xs"
-                variant="subtle"
-                color="gray"
-              >
-                key
-              </Button>
-            )}
-          </Group>
-        </Group>
-
-        {aiError && (
-          <Alert color="red" variant="light" mt="sm">
-            {aiError}
-          </Alert>
-        )}
-
-        {aiResults[attemptIdx] && (
-          <AiTriageResultCard result={aiResults[attemptIdx]} />
-        )}
-
-        {/* Conversation thread */}
-        {conversations[attemptIdx] && conversations[attemptIdx].length > 1 && (
-          <Stack gap="sm" mt="md">
-            {conversations[attemptIdx].slice(1).map((msg, i) => {
-              if (msg.role === "user") {
-                return (
-                  <Paper key={i} p="sm" radius="sm" bg="dark.5" ml="xl">
-                    <Text size="xs" fw={500} tt="uppercase" c="dimmed" mb={4}>You</Text>
-                    <Text size="sm" style={{ whiteSpace: "pre-wrap" }}>{msg.content}</Text>
-                  </Paper>
-                );
-              }
-              const parsed = tryParseTriageResult(msg.content);
-              if (parsed) {
-                return <AiTriageResultCard key={i} result={parsed} />;
-              }
-              return (
-                <Paper key={i} p="sm" radius="sm" mr="xl" withBorder style={{ borderColor: "var(--mantine-color-violet-9)" }}>
-                  <Text size="xs" fw={500} tt="uppercase" c="dimmed" mb={4}>AI</Text>
-                  <Text size="sm" style={{ whiteSpace: "pre-wrap" }}>{msg.content}</Text>
-                </Paper>
-              );
-            })}
-            {aiLoading && (
-              <Paper p="sm" radius="sm" mr="xl" withBorder style={{ borderColor: "var(--mantine-color-violet-9)" }}>
-                <Text size="sm" c="dimmed">Thinking...</Text>
-              </Paper>
-            )}
-          </Stack>
-        )}
-
-        {/* Follow-up input */}
-        {aiResults[attemptIdx] && (
-          <Group mt="sm" gap="xs">
-            <TextInput
-              placeholder="Ask a follow-up question..."
-              value={followUpInput}
-              onChange={(e) => setFollowUpInput(e.currentTarget.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey && followUpInput.trim()) {
-                  e.preventDefault();
-                  sendFollowUp();
-                }
-              }}
-              disabled={aiLoading}
-              size="sm"
-              style={{ flex: 1 }}
-            />
-            <Button
-              onClick={sendFollowUp}
-              disabled={aiLoading || !followUpInput.trim()}
-              size="sm"
-              color="violet"
-            >
-              Send
-            </Button>
-          </Group>
-        )}
-      </Paper>
-
-      <AttemptSteps attempt={currentAttempt} attemptIdx={attemptIdx} compare={compare} hasPassingRun={hasPassingRun} />
     </Stack>
-  );
-}
-
-function TriageCard({ triage, suggestedNextStep }: { triage: TriageSummary; suggestedNextStep?: string }) {
-  return (
-    <Paper p="lg" radius="md" bg="dark.6">
-      <Title order={3}>{triage.testCase.fullTitle}</Title>
-      <Text size="sm" mt="xs">{triage.summary}</Text>
-      <Group gap="sm" mt="md">
-        <CategoryBadge category={triage.category} />
-        <ConfidenceBadge confidence={triage.confidence} />
-      </Group>
-      <Paper p="sm" radius="sm" mt="md" bg="dark.5">
-        <Text size="sm">
-          <Text span fw={500}>Next step: </Text>
-          {suggestedNextStep ?? triage.suggestedNextStep}
-        </Text>
-      </Paper>
-    </Paper>
-  );
-}
-
-function DivergenceCard({
-  divergence,
-  hasPassingRun,
-}: {
-  divergence: Divergence | null;
-  hasPassingRun: boolean;
-}) {
-  if (!divergence) {
-    return (
-      <Paper p="lg" radius="md" withBorder>
-        <Text c="dimmed">
-          {hasPassingRun
-            ? "No step-level divergence detected."
-            : "No failing step identified."}
-        </Text>
-      </Paper>
-    );
-  }
-
-  if (!hasPassingRun) {
-    return (
-      <Alert variant="light" color="red" title={`Failing step — step ${divergence.stepIndex}`} radius="md">
-        <Code block>{divergence.failingStep?.title ?? "Unknown step"}</Code>
-        <Text size="sm" c="dimmed" mt="xs">
-          {divergence.description}
-        </Text>
-        <Group gap="xs" mt="sm">
-          <Badge size="sm" variant="outline" color="gray">
-            Significance: {divergence.significance}
-          </Badge>
-        </Group>
-      </Alert>
-    );
-  }
-
-  return (
-    <Alert variant="light" color="yellow" title={`First divergence — step ${divergence.stepIndex}`} radius="md">
-      <Text size="sm">{divergence.description}</Text>
-      <Group gap="xs" mt="sm">
-        <Badge size="sm" variant="outline" color="gray">
-          Type: {divergence.type.replace(/_/g, " ")}
-        </Badge>
-        <Badge size="sm" variant="outline" color="gray">
-          Significance: {divergence.significance}
-        </Badge>
-      </Group>
-      <SimpleGrid cols={2} mt="md" spacing="md">
-        <Box>
-          <Text size="xs" fw={600} tt="uppercase" c="red">
-            Failing step
-          </Text>
-          <Code block style={{ fontSize: "var(--mantine-font-size-xs)" }}>
-            {divergence.failingStep?.title ?? "—"}
-          </Code>
-        </Box>
-        <Box>
-          <Text size="xs" fw={600} tt="uppercase" c="green">
-            Passing step
-          </Text>
-          <Code block style={{ fontSize: "var(--mantine-font-size-xs)" }}>
-            {divergence.passingStep?.title ?? "—"}
-          </Code>
-        </Box>
-      </SimpleGrid>
-    </Alert>
-  );
-}
-
-export function EvidenceCard({
-  evidence,
-  artifacts,
-  sessionId,
-}: {
-  evidence: EvidenceItem[];
-  artifacts: Artifact[];
-  sessionId: string;
-}) {
-  const items = evidence.filter((e) => e.type !== "error_message");
-  const screenshots = artifacts.filter(
-    (a) => a.type === "screenshot" && a.contentType.startsWith("image/")
-  );
-  const videos = artifacts.filter(
-    (a) => a.type === "video" && a.contentType.startsWith("video/")
-  );
-
-  if (items.length === 0 && screenshots.length === 0 && videos.length === 0) return null;
-
-  return (
-    <Paper p="lg" radius="md" bg="dark.6">
-      <Text size="xs" fw={600} tt="uppercase" c="dimmed">
-        Evidence
-      </Text>
-      {items.length > 0 && (
-        <List spacing="xs" mt="sm" size="sm">
-          {items.map((e, i) => (
-            <List.Item
-              key={i}
-              icon={<EvidenceIcon type={e.type} />}
-            >
-              {e.description}
-            </List.Item>
-          ))}
-        </List>
-      )}
-      {screenshots.length > 0 && (
-        <Box mt="md">
-          <Text size="xs" fw={600} tt="uppercase" c="dimmed" mb="sm">
-            Screenshots
-          </Text>
-          <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
-            {screenshots.map((s, i) => (
-              <Card key={i} padding={0} radius="sm" withBorder>
-                <Card.Section>
-                  <Image
-                    src={`/api/artifacts/${sessionId}?path=${encodeURIComponent(s.path)}`}
-                    alt={s.name}
-                    style={{ cursor: "pointer" }}
-                    onClick={() => window.open(`/api/artifacts/${sessionId}?path=${encodeURIComponent(s.path)}`, "_blank")}
-                  />
-                </Card.Section>
-                <Text size="xs" c="dimmed" p="xs" truncate="end">
-                  {s.name}
-                </Text>
-              </Card>
-            ))}
-          </SimpleGrid>
-        </Box>
-      )}
-      {videos.length > 0 && (
-        <Box mt="md">
-          <Text size="xs" fw={600} tt="uppercase" c="dimmed" mb="sm">
-            Videos
-          </Text>
-          <Stack gap="md">
-            {videos.map((v, i) => (
-              <Card key={i} padding={0} radius="sm" withBorder>
-                <Card.Section>
-                  <video
-                    src={`/api/artifacts/${sessionId}?path=${encodeURIComponent(v.path)}`}
-                    controls
-                    style={{ width: "100%", display: "block" }}
-                  />
-                </Card.Section>
-                <Text size="xs" c="dimmed" p="xs" truncate="end">
-                  {v.name}
-                </Text>
-              </Card>
-            ))}
-          </Stack>
-        </Box>
-      )}
-    </Paper>
-  );
-}
-
-function ErrorBlock({ message, stack }: { message: string; stack?: string }) {
-  const clean = message.replace(/\[\d+m/g, "");
-  const cleanStack = stack?.replace(/\[\d+m/g, "") ?? "";
-
-  const lines = clean.split("\n");
-  const headline = lines[0] ?? "";
-  const messageDetail = lines.slice(1).join("\n").trim();
-
-  const detail = cleanStack && cleanStack !== clean ? cleanStack : messageDetail;
-
-  return (
-    <Box mt="sm">
-      <Paper p="sm" radius="sm" bg="red.9" style={{ borderBottomLeftRadius: detail ? 0 : undefined, borderBottomRightRadius: detail ? 0 : undefined }}>
-        <Text size="sm" fw={500} c="red.2" style={{ wordBreak: "break-word" }}>
-          {headline}
-        </Text>
-      </Paper>
-      {detail && (
-        <CodeHighlight
-          code={detail}
-          language="javascript"
-          withCopyButton={false}
-          styles={{
-            codeHighlight: { borderTopLeftRadius: 0, borderTopRightRadius: 0, maxHeight: 256, overflow: "auto", fontSize: "var(--mantine-font-size-xs)" },
-          }}
-        />
-      )}
-    </Box>
-  );
-}
-
-function AttemptSteps({
-  attempt,
-  attemptIdx,
-  compare,
-  hasPassingRun,
-}: {
-  attempt: { steps: { title: string; duration: number; error?: { message?: string } }[] } | undefined;
-  attemptIdx: number;
-  compare: CompareResult;
-  hasPassingRun: boolean;
-}) {
-  const steps = attempt?.steps ?? [];
-  const passSteps =
-    compare.match.passingTest?.results[
-      compare.match.passingTest.results.length - 1
-    ]?.steps ?? [];
-
-  if (steps.length === 0 && passSteps.length === 0) return null;
-
-  if (!hasPassingRun || passSteps.length === 0) {
-    return (
-      <Paper p="lg" radius="md" bg="dark.6">
-        <Text size="xs" fw={600} tt="uppercase" c="dimmed">
-          Test steps{compare.match.failingTest.results.length > 1 ? ` — attempt ${attemptIdx + 1}` : ""}
-        </Text>
-        <Table mt="md" fz="xs" horizontalSpacing="xs" verticalSpacing={6}>
-          <Table.Thead>
-            <Table.Tr>
-              <Table.Th w={40}>#</Table.Th>
-              <Table.Th w={64}>Status</Table.Th>
-              <Table.Th>Step</Table.Th>
-              <Table.Th w={72}>Duration</Table.Th>
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
-            {steps.map((step, i) => {
-              const hasError = !!step.error;
-              return (
-                <Table.Tr
-                  key={i}
-                  bg={hasError ? "rgba(220, 38, 38, 0.1)" : undefined}
-                >
-                  <Table.Td c="dimmed">{i}</Table.Td>
-                  <Table.Td>
-                    <Badge size="xs" color={hasError ? "red" : "green"} variant="light">
-                      {hasError ? "fail" : "pass"}
-                    </Badge>
-                  </Table.Td>
-                  <Table.Td>
-                    <Text size="xs" truncate="end">{step.title}</Text>
-                    {step.error?.message && (
-                      <Text size="xs" c="red" truncate="end" mt={2}>
-                        {step.error.message.slice(0, 80)}
-                      </Text>
-                    )}
-                  </Table.Td>
-                  <Table.Td c="dimmed">{step.duration}ms</Table.Td>
-                </Table.Tr>
-              );
-            })}
-          </Table.Tbody>
-        </Table>
-      </Paper>
-    );
-  }
-
-  const maxLen = Math.max(steps.length, passSteps.length);
-
-  return (
-    <Paper p="lg" radius="md" bg="dark.6">
-      <Text size="xs" fw={600} tt="uppercase" c="dimmed">
-        Step-by-step comparison{compare.match.failingTest.results.length > 1 ? ` — attempt ${attemptIdx + 1}` : ""}
-      </Text>
-      <Box mt="md" style={{ overflow: "auto" }}>
-        <Table fz="xs" horizontalSpacing="xs" verticalSpacing={6}>
-          <Table.Thead>
-            <Table.Tr>
-              <Table.Th w={40}>#</Table.Th>
-              <Table.Th c="red">Failing</Table.Th>
-              <Table.Th w={56} c="red">ms</Table.Th>
-              <Table.Th c="green">Passing</Table.Th>
-              <Table.Th w={56} c="green">ms</Table.Th>
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
-            {Array.from({ length: maxLen }, (_, i) => {
-              const fs = steps[i];
-              const ps = passSteps[i];
-              const isDivergent =
-                (fs && ps && !stepTitlesMatch(fs.title, ps.title)) ||
-                (fs && !ps && i < passSteps.length) ||
-                (!fs && ps && i < steps.length) ||
-                (fs?.error && !ps?.error);
-
-              return (
-                <Table.Tr
-                  key={i}
-                  bg={isDivergent ? "rgba(217, 119, 6, 0.1)" : undefined}
-                >
-                  <Table.Td c="dimmed">{i}</Table.Td>
-                  <Table.Td>
-                    <Text size="xs" truncate="end">
-                      {fs?.title ?? "—"}
-                      {fs?.error?.message && (
-                        <Text span size="xs" c="red" ml={4}>
-                          {fs.error.message.slice(0, 40)}
-                        </Text>
-                      )}
-                    </Text>
-                  </Table.Td>
-                  <Table.Td c="dimmed">
-                    {fs?.duration ?? "—"}
-                  </Table.Td>
-                  <Table.Td>
-                    <Text size="xs" truncate="end">{ps?.title ?? "—"}</Text>
-                  </Table.Td>
-                  <Table.Td c="dimmed">
-                    {ps?.duration ?? "—"}
-                  </Table.Td>
-                </Table.Tr>
-              );
-            })}
-          </Table.Tbody>
-        </Table>
-      </Box>
-    </Paper>
-  );
-}
-
-
-// ---- AI Triage Result ----
-
-const AI_CATEGORY_LABELS: Record<string, string> = {
-  app_regression: "App Regression",
-  ui_change_or_outdated_test: "UI/API Change",
-  timing_or_flake: "Timing / Flake",
-  environment_issue: "Environment Issue",
-  unknown: "Unknown",
-};
-
-const AI_CATEGORY_COLORS: Record<string, string> = {
-  app_regression: "red",
-  ui_change_or_outdated_test: "yellow",
-  timing_or_flake: "orange",
-  environment_issue: "blue",
-  unknown: "gray",
-};
-
-function AiTriageResultCard({ result }: { result: AiTriageResult }) {
-  return (
-    <Paper p="md" radius="sm" mt="md" withBorder style={{ borderColor: "var(--mantine-color-violet-9)" }}>
-      {/* Category + confidence */}
-      <Group gap="sm" mb="sm">
-        <Badge
-          size="sm"
-          variant="light"
-          color={AI_CATEGORY_COLORS[result.category] ?? "gray"}
-        >
-          {AI_CATEGORY_LABELS[result.category] ?? result.category}
-        </Badge>
-        <Text
-          size="xs"
-          c={
-            result.confidence === "high" ? "green" :
-            result.confidence === "medium" ? "yellow" :
-            "dimmed"
-          }
-        >
-          {result.confidence} confidence
-        </Text>
-      </Group>
-
-      {/* Diagnosis */}
-      <Text size="sm">{result.diagnosis}</Text>
-
-      {/* Evidence */}
-      {result.primaryEvidence.length > 0 && (
-        <Box mt="sm">
-          <Text size="xs" fw={600} tt="uppercase" c="dimmed" mb={4}>Evidence</Text>
-          <List spacing={4} size="xs">
-            {result.primaryEvidence.map((e: string, i: number) => (
-              <List.Item key={i} icon={<Text size="xs" c="green" fw={700}>+</Text>}>
-                <Text size="xs" c="dimmed">{e}</Text>
-              </List.Item>
-            ))}
-          </List>
-        </Box>
-      )}
-
-      {/* Counter-evidence */}
-      {result.counterEvidence.length > 0 && (
-        <Box mt="sm">
-          <Text size="xs" fw={600} tt="uppercase" c="dimmed" mb={4}>Counter-evidence</Text>
-          <List spacing={4} size="xs">
-            {result.counterEvidence.map((e: string, i: number) => (
-              <List.Item key={i} icon={<Text size="xs" c="dimmed" fw={700}>-</Text>}>
-                <Text size="xs" c="dimmed">{e}</Text>
-              </List.Item>
-            ))}
-          </List>
-        </Box>
-      )}
-
-      {/* Suggested next step */}
-      <Paper p="xs" radius="sm" mt="sm" bg="dark.5">
-        <Text size="xs">
-          <Text span fw={500}>Next step: </Text>
-          {result.suggestedNextStep}
-        </Text>
-      </Paper>
-    </Paper>
-  );
-}
-
-// ---- Small UI components ----
-
-function CategoryBadge({ category }: { category: string }) {
-  const colors: Record<string, string> = {
-    app_regression: "red",
-    flaky_timing: "yellow",
-    environment_issue: "blue",
-    test_bug: "violet",
-    unknown: "gray",
-  };
-
-  return (
-    <Badge size="sm" variant="light" color={colors[category] ?? "gray"}>
-      {category.replace(/_/g, " ")}
-    </Badge>
-  );
-}
-
-function ConfidenceBadge({ confidence }: { confidence: string }) {
-  const color =
-    confidence === "high" ? "green" :
-    confidence === "medium" ? "yellow" :
-    "gray";
-
-  return (
-    <Text size="xs" c={color}>
-      {confidence} confidence
-    </Text>
-  );
-}
-
-export function EvidenceIcon({ type }: { type: string }) {
-  const icons: Record<string, string> = {
-    screenshot_diff: "img",
-    trace_step: "trc",
-    console_error: "err",
-    request_failure: "req",
-    assertion_mismatch: "ast",
-    timing_anomaly: "clk",
-    error_message: "msg",
-  };
-
-  return (
-    <Badge size="sm" variant="filled" color="dark.5" fw={700} tt="uppercase" style={{ fontSize: 10 }}>
-      {icons[type] ?? "?"}
-    </Badge>
   );
 }
