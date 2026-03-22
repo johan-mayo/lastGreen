@@ -1,13 +1,12 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import {
   MantineProvider,
   ColorSchemeScript,
-  Anchor,
-  Text,
-  Group,
   Box,
 } from "@mantine/core";
 import { theme } from "./theme";
+import { NavBar } from "./components/nav-bar";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -28,21 +27,9 @@ export default function RootLayout({
       </head>
       <body>
         <MantineProvider theme={theme} defaultColorScheme="dark">
-          <Box
-            component="nav"
-            px="md"
-            py="sm"
-            style={{ borderBottom: "1px solid var(--mantine-color-dark-4)" }}
-          >
-            <Group>
-              <Anchor href="/" underline="never" c="white" fw={600} fz="lg">
-                lastGreen
-              </Anchor>
-              <Text size="sm" c="dimmed">
-                Playwright failure diff &amp; triage
-              </Text>
-            </Group>
-          </Box>
+          <Suspense>
+            <NavBar />
+          </Suspense>
 
           <Box px="lg" py="lg">
             {children}

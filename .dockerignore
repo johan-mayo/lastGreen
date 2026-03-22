@@ -1,6 +1,7 @@
 node_modules
-dist
 .next
 .lastgreen-data
-*.tsbuildinfo
+apps/web/.lastgreen-data
+apps/web/.next
 *.DS_Store
+.git

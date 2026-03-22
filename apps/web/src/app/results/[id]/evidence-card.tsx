@@ -1,6 +1,7 @@
 "use client";
 
 import type { EvidenceItem, Artifact } from "@last-green/core";
+import { withBasePath } from "../../lib/base-path";
 import {
   Badge,
   Box,
@@ -50,12 +51,12 @@ export function EvidenceCard({
               <Card key={i} padding={0} radius="sm" withBorder>
                 <Card.Section>
                   <Image
-                    src={`/api/artifacts/${sessionId}?path=${encodeURIComponent(s.path)}`}
+                    src={`${withBasePath(`/api/artifacts/${sessionId}`)}?path=${encodeURIComponent(s.path)}`}
                     alt={s.name}
                     style={{ cursor: "pointer" }}
                     onClick={() =>
                       window.open(
-                        `/api/artifacts/${sessionId}?path=${encodeURIComponent(s.path)}`,
+                        `${withBasePath(`/api/artifacts/${sessionId}`)}?path=${encodeURIComponent(s.path)}`,
                         "_blank",
                       )
                     }
@@ -81,7 +82,7 @@ export function EvidenceCard({
               <Card key={i} padding={0} radius="sm" withBorder>
                 <Card.Section>
                   <video
-                    src={`/api/artifacts/${sessionId}?path=${encodeURIComponent(v.path)}`}
+                    src={`${withBasePath(`/api/artifacts/${sessionId}`)}?path=${encodeURIComponent(v.path)}`}
                     controls
                     style={{ width: "100%", display: "block" }}
                   />

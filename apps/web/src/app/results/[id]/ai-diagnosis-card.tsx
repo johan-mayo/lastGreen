@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useEffect } from "react";
 import type { AiTriageResult, ComparisonSummary } from "@last-green/core";
+import { withBasePath } from "../../lib/base-path";
 import {
   Alert,
   Box,
@@ -275,7 +276,7 @@ export function AiDiagnosisCard({
 
     const idx = attemptIdx;
     try {
-      const res = await fetch("/api/ai-triage", {
+      const res = await fetch(withBasePath("/api/ai-triage"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ apiKey, comparison: comparisonSummary }),
@@ -314,7 +315,7 @@ export function AiDiagnosisCard({
     setAiError(null);
 
     try {
-      const res = await fetch("/api/ai-triage", {
+      const res = await fetch(withBasePath("/api/ai-triage"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

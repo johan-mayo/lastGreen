@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useMemo } from "react";
 import type { AnalysisResult } from "../../api/upload/route";
+import { withBasePath } from "../../lib/base-path";
 import type {
   TriageSummary,
   NormalizedTestCase,
@@ -323,7 +324,7 @@ export function ResultsView({ id }: { id: string }) {
   const [splitMode, setSplitMode] = useState(false);
 
   useEffect(() => {
-    fetch(`/api/results/${id}`)
+    fetch(withBasePath(`/api/results/${id}`))
       .then(async (res) => {
         if (!res.ok) throw new Error("Failed to load results");
         return res.json();
@@ -609,16 +610,6 @@ function DetailPanel({
         </Paper>
       )}
 
-      {/* Test steps + divergence */}
-      <AccordionCard title="Test Steps">
-        <TestStepsCard
-          divergence={currentAttempt?.status !== "passed" ? attemptDivergence : null}
-          attempt={currentAttempt}
-          compare={compare}
-          hasPassingRun={hasPassingRun}
-        />
-      </AccordionCard>
-
       {/* Per-attempt error + AI diagnosis */}
       {currentAttempt?.error && (
         <AccordionCard title="Error">
@@ -634,6 +625,16 @@ function DetailPanel({
           </Stack>
         </AccordionCard>
       )}
+
+      {/* Test steps + divergence */}
+      <AccordionCard title="Test Steps">
+        <TestStepsCard
+          divergence={currentAttempt?.status !== "passed" ? attemptDivergence : null}
+          attempt={currentAttempt}
+          compare={compare}
+          hasPassingRun={hasPassingRun}
+        />
+      </AccordionCard>
 
       {/* Non-2xx network requests for this attempt */}
       {failingRequests.length > 0 && (

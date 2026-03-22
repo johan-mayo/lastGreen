@@ -13,7 +13,7 @@ import {
 import type { NormalizedRun, Comparison, TriageSummary, NetworkRequest } from "@last-green/core";
 import type { CompareResult } from "@last-green/core";
 
-const UPLOAD_DIR = join(process.cwd(), ".lastgreen-data");
+const UPLOAD_DIR = process.env.LASTGREEN_DATA_DIR || join(process.cwd(), ".lastgreen-data");
 
 export interface AnalysisResult {
   id: string;
@@ -94,6 +94,16 @@ export async function POST(req: NextRequest) {
       JSON.stringify(result, null, 2)
     );
 
+    // Save artifact proxy metadata if provided (for aegis integration)
+    const failingArtifactBaseUrl = formData.get("failingArtifactBaseUrl") as string | null;
+    const passingArtifactBaseUrl = formData.get("passingArtifactBaseUrl") as string | null;
+    if (failingArtifactBaseUrl || passingArtifactBaseUrl) {
+      await writeFile(
+        join(sessionDir, "artifact-sources.json"),
+        JSON.stringify({ failingArtifactBaseUrl, passingArtifactBaseUrl })
+      );
+    }
+
     return NextResponse.json({ id });
   } catch (e) {
     console.error("Upload processing failed:", e);
@@ -104,16 +114,43 @@ export async function POST(req: NextRequest) {
 
 const ARTIFACT_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".webm", ".mp4", ".zip"]);
 
-/** Extract image/video artifacts from a zip into the session directory */
+// Patterns to find embedded ZIP in Playwright HTML reports
+const SCRIPT_TAG_PATTERN = /<script[^>]*id=["']playwrightReportBase64["'][^>]*>([\s\S]*?)<\/script>/;
+const JS_VAR_PATTERN = /playwrightReportBase64\s*=\s*["']([A-Za-z0-9+/=]+)["']/;
+
+/** Extract image/video artifacts from a buffer (ZIP or HTML with embedded ZIP) */
 async function extractArtifactsFromZip(
   buffer: Buffer,
   sessionDir: string
 ): Promise<void> {
-  // Check if it's actually a zip
-  if (buffer.length < 4 || buffer[0] !== 0x50 || buffer[1] !== 0x4b) return;
+  let zipBuffer: Buffer | null = null;
+
+  // Direct ZIP
+  if (buffer.length >= 4 && buffer[0] === 0x50 && buffer[1] === 0x4b) {
+    zipBuffer = buffer;
+  } else {
+    // Try HTML — extract embedded base64 ZIP
+    const html = buffer.toString("utf-8");
+    const scriptMatch = html.match(SCRIPT_TAG_PATTERN);
+    let base64: string | null = null;
+    if (scriptMatch) {
+      const content = scriptMatch[1].trim();
+      const commaIdx = content.indexOf(",");
+      base64 = commaIdx !== -1 ? content.slice(commaIdx + 1) : content;
+    }
+    if (!base64) {
+      const varMatch = html.match(JS_VAR_PATTERN);
+      if (varMatch) base64 = varMatch[1];
+    }
+    if (base64) {
+      zipBuffer = Buffer.from(base64, "base64");
+    }
+  }
+
+  if (!zipBuffer) return;
 
   try {
-    const zip = await JSZip.loadAsync(buffer);
+    const zip = await JSZip.loadAsync(zipBuffer);
 
     for (const [path, entry] of Object.entries(zip.files)) {
       if (entry.dir) continue;

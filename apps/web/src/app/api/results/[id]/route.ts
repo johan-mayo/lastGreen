@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-const UPLOAD_DIR = join(process.cwd(), ".lastgreen-data");
+const UPLOAD_DIR = process.env.LASTGREEN_DATA_DIR || join(process.cwd(), ".lastgreen-data");
 
 export async function GET(
   _req: NextRequest,

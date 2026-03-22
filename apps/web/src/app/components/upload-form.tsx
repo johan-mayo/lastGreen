@@ -4,6 +4,7 @@ import { useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { Stack, Button, Alert, Text, Group } from "@mantine/core";
 import { Dropzone } from "@mantine/dropzone";
+import { withBasePath } from "../lib/base-path";
 
 export function UploadForm() {
   const router = useRouter();
@@ -24,7 +25,7 @@ export function UploadForm() {
         formData.append("passing", passingFile);
       }
 
-      const res = await fetch("/api/upload", {
+      const res = await fetch(withBasePath("/api/upload"), {
         method: "POST",
         body: formData,
       });
